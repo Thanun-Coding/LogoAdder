@@ -81,7 +81,7 @@ const ANDROID_HEIC_COOLDOWN_MS = 60;
 const DIRECTORY_DB_NAME = "logoAdderDirectoryAccess";
 const DIRECTORY_STORE_NAME = "handles";
 const DIRECTORY_HANDLE_KEY = "androidSaveDirectory";
-const CONFIG_STORAGE_KEY = "logoAdderConfig_v3";
+const CONFIG_STORAGE_KEY = "logoAdderConfig_v1";
 const PERSISTENT_LOGO_KEY = "logoAdder_PersistentLogo";
 const GUIDANCE_VERSION_KEY = "logoAdderGuidanceSeen_v1";
 const QUALITY_PRESET_MAP = {
@@ -420,7 +420,7 @@ function saveConfig(logoBase64 = null) {
 }
 
 async function loadConfig() {
-    const saved = localStorage.getItem(CONFIG_STORAGE_KEY) || localStorage.getItem('logoAdderConfig_v2');
+    const saved = localStorage.getItem(CONFIG_STORAGE_KEY);
     const savedLogo = localStorage.getItem(PERSISTENT_LOGO_KEY);
 
     if (saved) {

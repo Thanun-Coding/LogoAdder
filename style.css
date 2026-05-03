@@ -50,7 +50,7 @@ body {
   height: 100vh;
   width: 100vw;
   overflow: hidden; 
-  touch-action: manipulation;
+  touch-action: auto;
 }
 
 @media (display-mode: standalone) {
@@ -106,7 +106,7 @@ body {
   height: 100vh;
   width: 100vw;
   overflow: hidden;
-  touch-action: manipulation;
+  touch-action: auto;
 }
 
 /* --- SIDEBAR & CONTROLS --- */
