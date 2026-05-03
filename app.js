@@ -22,11 +22,12 @@ function dismissFirstRunGuidance() {
 
 ui.downloadBtn.onclick = async () => {
     if (bgFiles.length === 0 || !logoImg) {
-        alert("សូមជ្រើសរើសរូបភាព និង Logo!");
+        showUserError("សូមជ្រើសរូបភាព និងLogo មុនចាប់ផ្ដើម។");
         return;
     }
 
     const btn = ui.downloadBtn;
+    clearAppStatus();
     setProcessingState(true);
     setPrimaryButtonState(true, "កំពុងរៀបចំ...");
     resetExportState();
@@ -50,13 +51,27 @@ ui.finalZipBtn.onclick = () => {
         return;
     }
 
+    if (currentZipDownloads.length === 0) {
+        ui.finalZipBtn.disabled = true;
+        return;
+    }
+
     currentZipDownloads.forEach((item, index) => {
         setTimeout(() => downloadBlobUrl(item.url, item.name), index * 300);
+        scheduleUrlRevoke(item.url);
     });
+
+    currentZipDownloads = [];
+    ui.finalZipBtn.disabled = true;
+    ui.finalZipBtn.innerText = "បានទាញយករួចរាល់"; // "Download Complete"
 };
 
 if (ui.changeSaveFolderBtn) {
     ui.changeSaveFolderBtn.onclick = handleChangeSaveFolderClick;
+}
+
+if (ui.cancelExportBtn) {
+    ui.cancelExportBtn.onclick = requestExportCancel;
 }
 
 if (ui.dismissGuidanceBtn) {

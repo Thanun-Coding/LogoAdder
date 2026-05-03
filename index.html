@@ -27,7 +27,6 @@
     <link rel="manifest" href="manifest.webmanifest" />
     <link rel="apple-touch-icon" href="icons/icon-192.png" />
     <link rel="stylesheet" href="style.css" />
-    <script src="vendor/jszip.min.js"></script>
   </head>
   <body>
     <div id="drop-overlay" class="drop-zone-overlay">
@@ -43,12 +42,12 @@
         </div>
         <div class="control-section">
           <div class="input-group">
-            <label>ជ្រើសរើសរូបភាព</label>
+            <label for="bgInput">ជ្រើសរើសរូបភាព</label>
             <input type="file" id="bgInput" multiple accept="image/*,.heic,.heif" />
             <small id="fileCount" class="status-muted">រកមិនឃើញរូបភាព</small>
           </div>
           <div class="input-group">
-            <label>ជ្រើសរើស Logo</label>
+            <label for="logoInput">ជ្រើសរើស Logo</label>
             <input type="file" id="logoInput" accept="image/*,.heic,.heif" />
             <small id="logoStatus" class="status-muted">រកមិនឃើញ Logo</small>
           </div>
@@ -84,7 +83,7 @@
           </div>
           <div class="margin-row">
             <div class="input-group">
-              <label>Margin Y</label>
+              <label for="marginY">Margin Y</label>
               <input
                 type="number"
                 id="marginY"
@@ -93,7 +92,7 @@
               />
             </div>
             <div class="input-group">
-              <label>Margin X</label>
+              <label for="marginX">Margin X</label>
               <input
                 type="number"
                 id="marginX"
@@ -104,7 +103,7 @@
           </div>
           <div class="input-group">
             <div class="label-row">
-              <label>ទំហំ Logo (%)</label>
+              <label for="sizeSlider">ទំហំ Logo (%)</label>
               <span id="sizeVal">10%</span>
             </div>
             <input
@@ -118,7 +117,7 @@
           </div>
           <div class="input-group">
             <div class="label-row">
-              <label>Logo Opacity (%)</label>
+              <label for="logo-opacity">Logo Opacity (%)</label>
               <span id="opacity-val">100%</span>
             </div>
             <input
@@ -132,7 +131,7 @@
           </div>
           <div class="margin-row">
             <div class="input-group">
-              <label>Export Quality</label>
+              <label for="qualityPreset">Export Quality</label>
               <select id="qualityPreset" class="preset-select">
                 <option value="high" selected>High</option>
                 <option value="balanced">Balanced</option>
@@ -140,7 +139,7 @@
               </select>
             </div>
             <div class="input-group">
-              <label>Output Size</label>
+              <label for="sizePreset">Output Size</label>
               <select id="sizePreset" class="preset-select">
                 <option value="original" selected>Original</option>
                 <option value="large">Large</option>
@@ -151,8 +150,16 @@
           </div>
         </div>
         <div class="action-area">
-          <button id="downloadBtn" class="primary-btn">
+          <button id="downloadBtn" class="primary-btn" aria-describedby="appStatusMessage">
             ចាប់ផ្ដើមដំណើរការ
+          </button>
+          <button
+            id="cancelExportBtn"
+            class="secondary-btn"
+            style="display: none"
+            type="button"
+          >
+            បោះបង់
           </button>
           <button
             id="changeSaveFolderBtn"
@@ -165,6 +172,13 @@
           <div id="zipDownloadContainer" style="display: none; width: 100%">
             <button id="finalZipBtn" class="secondary-btn">ទាញយកជា ZIP</button>
           </div>
+          <div
+            id="appStatusMessage"
+            class="app-status-message"
+            role="status"
+            aria-live="polite"
+            style="display: none"
+          ></div>
           <div id="firstRunGuidance" class="first-run-guidance" style="display: none">
             <div class="first-run-guidance-title">ការណែនាំខ្លី</div>
             <div id="firstRunGuidanceBody" class="first-run-guidance-body"></div>
@@ -185,13 +199,22 @@
             </div>
             <canvas id="mainCanvas"></canvas>
             <div id="nav-controls" class="hidden-nav">
-              <div class="nav-zone" id="prevZone">
+              <div
+                class="nav-zone"
+                id="prevZone"
+                role="button"
+                tabindex="0"
+                aria-label="Previous image"
+              >
                 <div class="nav-indicator">❮</div>
               </div>
               <div id="navStatus">0 / 0</div>
               <div
                 class="nav-zone"
                 id="nextZone"
+                role="button"
+                tabindex="0"
+                aria-label="Next image"
                 style="justify-content: flex-end"
               >
                 <div class="nav-indicator">❯</div>
@@ -255,7 +278,6 @@
         </footer>
       </main>
     </div>
-    <script src="vendor/heic2any.min.js"></script>
     <script src="app-state.js"></script>
     <script src="media-ui.js"></script>
     <script src="export-flows.js"></script>

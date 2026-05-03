@@ -32,7 +32,6 @@ LogoAdder is a static browser/PWA app for adding a selected logo to one or more 
 - `vendor/` - Third-party browser libraries.
 - `icons/` - PWA icons.
 - `docs/superpowers/` - Existing implementation plans/specs.
-- `script.js` - Legacy/unloaded monolithic script. Check before changing.
 
 ## Commands
 
@@ -94,7 +93,6 @@ Lint:
 - Update `sw.js` cache entries and cache name when app shell files change.
 - Update `manifest.webmanifest` only for PWA metadata/icon changes.
 - Treat files in `vendor/` as third-party assets.
-- Do not assume `script.js` is active; `index.html` currently loads the split files instead.
 
 ## Rules For Making Changes
 
@@ -112,7 +110,6 @@ Lint:
 - Do not edit `vendor/` libraries unless explicitly requested.
 - Do not remove or bypass the service worker without explicit approval.
 - Do not reorder active script tags unless the dependency order has been checked.
-- Do not rely on `script.js` without confirming whether it should be restored or removed.
 - Do not rewrite Khmer strings through tools that may corrupt encoding.
 - Do not make broad refactors while fixing a narrow issue.
 
@@ -140,4 +137,3 @@ Manual verification to perform when relevant:
 - Test Android Chrome folder-save flow.
 - Test HEIC/HEIF input.
 - Check service worker/PWA behavior after cache changes.
-

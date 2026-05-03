@@ -6,22 +6,22 @@ async function startAndroidChromeFolderExport(btn) {
             beginExportSummary({
                 title: "ស្ថានភាពការរក្សាទុក",
                 total: bgFiles.length,
-                status: "កំពុងរក្សាទុកទៅថតដែលបានជ្រើស",
+                status: "កំពុងរក្សាទុកទៅFolderដែលបានជ្រើស",
                 visible: true
             });
             setCompactProgressSummary();
 
             const restoredHandle = await restorePersistedAndroidDirectoryHandle();
             ui.progressText.innerText = restoredHandle
-                ? "កំពុងប្រើថតដែលបានចងចាំ"
-                : "សូមជ្រើសថតក្នុង Pictures ដើម្បីរក្សាទុករូប";
+                ? "កំពុងប្រើFolderដែលបានចងចាំ"
+                : "សូមជ្រើសFolderក្នុង Pictures ដើម្បីរក្សាទុករូប";
             const directoryHandle = restoredHandle || await chooseAndroidSaveDirectory();
             let permissionState = await queryDirectoryPermission(directoryHandle);
 
             if (permissionState !== "granted") {
                 ui.progressText.innerText = restoredHandle
-                    ? "ថតត្រូវបានចងចាំរួចហើយ សូមចុច អនុញ្ញាត ដើម្បីរក្សាទុករូប"
-                    : "Chrome ត្រូវការការអនុញ្ញាត ដើម្បីរក្សាទុករូបទៅថតដែលបានជ្រើស";
+                    ? "Folderត្រូវបានចងចាំរួចហើយ សូមចុច អនុញ្ញាត ដើម្បីរក្សាទុករូប"
+                    : "Chrome ត្រូវការការអនុញ្ញាត ដើម្បីរក្សាទុករូបទៅFolderដែលបានជ្រើស";
                 permissionState = await requestDirectoryPermission(directoryHandle);
             }
 
@@ -34,9 +34,11 @@ async function startAndroidChromeFolderExport(btn) {
             let skippedCount = 0;
 
             for (let i = 0; i < bgFiles.length; i++) {
+                throwIfExportCancelled();
                 const progressMessage = buildCurrentFileProgressText("កំពុងដំណើរការ", bgFiles[i], i + 1, bgFiles.length);
                 updateExportProgress(i, bgFiles.length, progressMessage);
                 const result = await processAndroidBatchFile(bgFiles[i]);
+                throwIfExportCancelled();
 
                 if (result.ok) {
                     const fileName = getMobileOutputFileName(bgFiles[i]);
@@ -53,8 +55,8 @@ async function startAndroidChromeFolderExport(btn) {
                     saved: savedCount,
                     skipped: skippedCount,
                     status: skippedCount > 0
-                        ? `កំពុងរក្សាទុកទៅថតដែលបានជ្រើស • បានរំលង ${skippedCount} រូប`
-                        : "កំពុងរក្សាទុកទៅថតដែលបានជ្រើស"
+                        ? `កំពុងរក្សាទុកទៅFolderដែលបានជ្រើស • បានរំលង ${skippedCount} រូប`
+                        : "កំពុងរក្សាទុកទៅFolderដែលបានជ្រើស"
                 });
                 await yieldToBrowser(isHeicFile(bgFiles[i]) ? ANDROID_HEIC_COOLDOWN_MS : 0);
             }
@@ -77,12 +79,17 @@ async function startAndroidChromeFolderExport(btn) {
             resultsSection.scrollIntoView({ behavior: 'smooth' });
             return;
         } catch (error) {
+            if (isExportCancelledError(error)) {
+                showProcessingCancelled();
+                return;
+            }
+
             if (error.name === "AbortError") {
                 zipContainer.style.display = "none";
                 setProcessingState(false);
                 resetExportSummary();
                 setPrimaryButtonState(false, "ចាប់ផ្ដើមដំណើរការ");
-                ui.progressText.innerText = "បានបោះបង់ការជ្រើសថត";
+                ui.progressText.innerText = "បានបោះបង់ការជ្រើសFolder";
                 ui.progressCount.innerText = `0 / ${bgFiles.length}`;
                 ui.progressFill.style.width = "0%";
                 return;
@@ -92,7 +99,7 @@ async function startAndroidChromeFolderExport(btn) {
 
             if (allowRetryWithFreshPicker) {
                 allowRetryWithFreshPicker = false;
-                ui.progressText.innerText = "សូមជ្រើសថតថ្មីដើម្បីរក្សាទុករូប";
+                ui.progressText.innerText = "សូមជ្រើសFolderថ្មីដើម្បីរក្សាទុករូប";
                 continue;
             }
 
@@ -109,7 +116,8 @@ async function startMobileShareFlow(btn) {
         nextIndex: 0,
         total: bgFiles.length,
         currentFiles: [],
-        currentLabel: ""
+        currentLabel: "",
+        isReadyToShare: false
     };
 
     ui.progressText.innerText = "កំពុងរៀបចំ 10 រូបដំបូង...";
@@ -126,11 +134,14 @@ async function prepareNextMobileShareBatch(btn) {
     try {
         mobileShareState.currentFiles = [];
         mobileShareState.currentLabel = `${start + 1}-${end}`;
+        mobileShareState.isReadyToShare = false;
 
         for (let i = start; i < end; i++) {
+            throwIfExportCancelled();
             const progressMessage = buildCurrentFileProgressText("កំពុងរៀបចំ", bgFiles[i], i + 1, mobileShareState.total);
             updateExportProgress(i, mobileShareState.total, progressMessage);
             const { outputBlob, previewBlob } = await processImageToBlob(bgFiles[i], offCanvas);
+            throwIfExportCancelled();
             const outputName = getMobileOutputFileName(bgFiles[i]);
             const shareFile = new File([outputBlob], outputName, { type: "image/jpeg" });
 
@@ -153,9 +164,15 @@ async function prepareNextMobileShareBatch(btn) {
         ui.finalZipBtn.innerText = `Save ${mobileShareState.currentLabel} Photos`;
         ui.progressText.innerText = `រូប ${mobileShareState.currentLabel} រួចរាល់`;
         setPrimaryButtonState(true, "ចុច Save Photos ខាងក្រោម");
+        mobileShareState.isReadyToShare = true;
     } catch (error) {
         resetCanvas(offCanvas);
         mobileShareState = null;
+        if (isExportCancelledError(error)) {
+            showProcessingCancelled();
+            return;
+        }
+
         showProcessingError(error);
     }
 }
@@ -170,6 +187,7 @@ async function sharePreparedMobileBatch() {
 
     try {
         shareBtn.disabled = true;
+        mobileShareState.isReadyToShare = false;
         await navigator.share({
             files: mobileShareState.currentFiles,
             title: "LogoAdder Photos"
@@ -211,7 +229,7 @@ async function sharePreparedMobileBatch() {
     } catch (error) {
         shareBtn.disabled = false;
         if (error.name !== "AbortError") {
-            alert(error.message || "Could not open save/share menu");
+            showUserError("មិនអាចបើកMenuរក្សាទុក/ចែករំលែកបាន។");
         }
     }
 }
@@ -223,14 +241,20 @@ async function startZipExport(btn, options = {}) {
     const shouldAutoDownloadChunks = useChunkedZip && bgFiles.length > AUTO_DOWNLOAD_THRESHOLD;
 
     try {
+        await ensureJSZipLoaded();
+        throwIfExportCancelled();
+
         for (let start = 0; start < bgFiles.length; start += filesPerZip) {
+            throwIfExportCancelled();
             const zip = new JSZip();
             const end = Math.min(start + filesPerZip, bgFiles.length);
 
             for (let i = start; i < end; i++) {
+                throwIfExportCancelled();
                 const progressMessage = buildCurrentFileProgressText("កំពុងដំណើរការ", bgFiles[i], i + 1, bgFiles.length);
                 updateExportProgress(i, bgFiles.length, progressMessage);
                 const { outputBlob, previewBlob } = await processImageToBlob(bgFiles[i], offCanvas);
+                throwIfExportCancelled();
 
                 addResultPreview(previewBlob);
                 updateExportProgress(i + 1, bgFiles.length, progressMessage);
@@ -238,11 +262,13 @@ async function startZipExport(btn, options = {}) {
                 await yieldToBrowser();
             }
 
+            throwIfExportCancelled();
             const zipBlob = await zip.generateAsync({
                 type: "blob",
                 compression: "STORE",
                 streamFiles: true
             });
+            throwIfExportCancelled();
             const chunkNumber = Math.floor(start / filesPerZip) + 1;
             const zipName = useChunkedZip && bgFiles.length > filesPerZip
                 ? `LogoAdder_Batch_${chunkNumber}.zip`
@@ -271,6 +297,11 @@ async function startZipExport(btn, options = {}) {
         resultsSection.scrollIntoView({ behavior: 'smooth' });
     } catch (error) {
         resetCanvas(offCanvas);
+        if (isExportCancelledError(error)) {
+            showProcessingCancelled();
+            return;
+        }
+
         showProcessingError(error);
     }
 }

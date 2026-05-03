@@ -17,6 +17,8 @@ const posButtons = document.querySelectorAll('.pos-btn');
 const hiddenPosInput = document.getElementById('position');
 const dropOverlay = document.getElementById('drop-overlay');
 const ui = {
+    appStatusMessage: document.getElementById('appStatusMessage'),
+    cancelExportBtn: document.getElementById('cancelExportBtn'),
     canvasPlaceholder: document.getElementById('canvas-placeholder'),
     changeSaveFolderBtn: document.getElementById('changeSaveFolderBtn'),
     dismissGuidanceBtn: document.getElementById('dismissGuidanceBtn'),
@@ -60,13 +62,16 @@ let resultPreviewUrls = [];
 let mobileShareState = null;
 let renderedPreviewCount = 0;
 let androidSaveDirectoryHandle = null;
+let exportCancelRequested = false;
 let isProcessing = false;
 let pendingAppReload = false;
 let hasReloadedForUpdate = false;
 let exportSummaryState = null;
 let exportFailureItems = [];
-let heicBatchWorker = null;
+let heicBatchWorkers = [];
+let heicBatchWorkerIndex = 0;
 let heicBatchWorkerRequestId = 0;
+const heicConversionCache = new WeakMap();
 const pendingHeicBatchWorkerRequests = new Map();
 
 const DEFAULT_PLACEHOLDER_TEXT = ui.placeholderText ? ui.placeholderText.innerText : "សូមជ្រើសរើសរូបភាពដើម្បីចាប់ផ្ដើម";
@@ -105,13 +110,115 @@ function reloadForPendingUpdate() {
     window.location.reload();
 }
 
+function clearAppStatus() {
+    if (!ui.appStatusMessage) {
+        return;
+    }
+
+    ui.appStatusMessage.innerText = "";
+    ui.appStatusMessage.style.display = "none";
+    ui.appStatusMessage.classList.remove("error", "success");
+}
+
+function showAppStatus(message, type = "error") {
+    if (!ui.appStatusMessage) {
+        return;
+    }
+
+    ui.appStatusMessage.innerText = message;
+    ui.appStatusMessage.classList.toggle("error", type === "error");
+    ui.appStatusMessage.classList.toggle("success", type === "success");
+    ui.appStatusMessage.style.display = "block";
+}
+
+function showUserError(message) {
+    if (typeof isMobileDevice === "function" && !isMobileDevice()) {
+        clearAppStatus();
+        alert(message);
+        return;
+    }
+
+    showAppStatus(message, "error");
+}
+
+function showUserSuccess(message) {
+    showAppStatus(message, "success");
+}
+
+function resetExportCancel() {
+    exportCancelRequested = false;
+
+    if (ui.cancelExportBtn) {
+        ui.cancelExportBtn.disabled = false;
+        ui.cancelExportBtn.innerText = "បោះបង់";
+    }
+}
+
+function setCancelButtonVisibility(active) {
+    if (!ui.cancelExportBtn) {
+        return;
+    }
+
+    ui.cancelExportBtn.style.display = active ? "block" : "none";
+}
+
 function setProcessingState(active) {
     isProcessing = active;
+    setCancelButtonVisibility(active);
+
+    if (active) {
+        resetExportCancel();
+    } else {
+        exportCancelRequested = false;
+    }
 
     if (!active && pendingAppReload) {
         pendingAppReload = false;
         reloadForPendingUpdate();
     }
+}
+
+function requestExportCancel() {
+    if (!isProcessing) {
+        return;
+    }
+
+    exportCancelRequested = true;
+
+    if (ui.cancelExportBtn) {
+        ui.cancelExportBtn.disabled = true;
+        ui.cancelExportBtn.innerText = "កំពុងបោះបង់...";
+    }
+
+    if (ui.progressText) {
+        ui.progressText.innerText = "នឹងបោះបង់បន្ទាប់ពីរូបបច្ចុប្បន្ន...";
+    }
+
+    if (
+        mobileShareState &&
+        mobileShareState.isReadyToShare &&
+        mobileShareState.currentFiles &&
+        mobileShareState.currentFiles.length > 0 &&
+        typeof showProcessingCancelled === "function"
+    ) {
+        showProcessingCancelled();
+    }
+}
+
+function createExportCancelledError() {
+    const error = new Error("Export canceled");
+    error.name = "ExportCancelledError";
+    return error;
+}
+
+function throwIfExportCancelled() {
+    if (exportCancelRequested) {
+        throw createExportCancelledError();
+    }
+}
+
+function isExportCancelledError(error) {
+    return Boolean(error && error.name === "ExportCancelledError");
 }
 
 function requestSafeAppReload() {
@@ -270,11 +377,11 @@ function markGuidanceSeen() {
 
 function getGuidanceContent() {
     if (canUseAndroidFolderSave()) {
-        return "ជ្រើសថតសម្រាប់រក្សាទុករូបម្តងដំបូង។ Chrome អាចសួរ អនុញ្ញាត ម្តងទៀត ហើយអ្នកអាចចុច ប្តូរថតរក្សាទុក ដើម្បីផ្លាស់ប្តូរថតពេលក្រោយ។";
+        return "ជ្រើសFolderសម្រាប់រក្សាទុករូបម្តងដំបូង។ Chrome អាចសួរ អនុញ្ញាត ម្តងទៀត ហើយអ្នកអាចចុច ប្តូរFolderរក្សាទុក ដើម្បីផ្លាស់ប្តូរFolderពេលក្រោយ។";
     }
 
     if (isMobileDevice()) {
-        return "លើ iPhone កម្មវិធីនឹងរៀបចំរូបជាក្រុម ហើយបើកម៉ឺនុយ Share/Save នៅពេលរូបរួចរាល់។";
+        return "លើ iPhone កម្មវិធីនឹងរៀបចំរូបជាក្រុម ហើយបើកMenu Share/Save នៅពេលរូបរួចរាល់។";
     }
 
     return "";
@@ -322,7 +429,7 @@ function summarizeFailureReason(error) {
     }
 
     if (message.includes("heic conversion failed")) {
-        return "បម្លែង HEIC មិនបាន";
+        return "បំលែង HEIC មិនបាន";
     }
 
     if (message.includes("image load failed")) {
@@ -330,7 +437,7 @@ function summarizeFailureReason(error) {
     }
 
     if (message.includes("canvas export failed")) {
-        return "បង្កើតរូបចេញមិនបាន";
+        return "រក្សារូបមិនបាន";
     }
 
     return error.message;

@@ -222,6 +222,14 @@ select:hover {
   box-shadow: 0 0 5px rgba(59, 130, 246, 0.5);
 }
 
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+.nav-zone:focus-visible {
+  outline: 3px solid rgba(125, 211, 252, 0.95);
+  outline-offset: 3px;
+}
+
 input[type="file"]::file-selector-button {
     background: rgba(59, 130, 246, 0.1); /* Subtle blue tint */
     border: 1px solid var(--accent);
@@ -407,13 +415,36 @@ select:focus {
   font-weight: 700;
 }
 
+.app-status-message {
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  background: rgba(12, 12, 14, 0.94);
+  color: #dbeafe;
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.app-status-message.error {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(127, 29, 29, 0.28);
+  color: #fecaca;
+}
+
+.app-status-message.success {
+  border-color: rgba(74, 222, 128, 0.42);
+  background: rgba(20, 83, 45, 0.26);
+  color: #bbf7d0;
+}
+
 .primary-btn:active, .pos-btn:active, .secondary-btn:active {
     transform: scale(0.97);
     filter: brightness(0.9);
 }
 
 /* --- BUTTON DISABLED STATE --- */
-.primary-btn:disabled {
+.primary-btn:disabled,
+.secondary-btn:disabled {
     background: #27272a; 
     color: var(--muted);
     cursor: not-allowed;

@@ -5,15 +5,29 @@ function rejectPendingHeicBatchWorkerRequests(error) {
     pendingHeicBatchWorkerRequests.clear();
 }
 
-function getHeicBatchWorker() {
-    if (heicBatchWorker) {
-        return heicBatchWorker;
+function getHeicWorkerPoolSize() {
+    if (isMobileDevice()) {
+        return 1;
     }
 
-    if (!window.Worker) {
-        return null;
-    }
+    return (navigator.hardwareConcurrency || 2) >= 4 ? 2 : 1;
+}
 
+function resetHeicWorkerPool(error) {
+    heicBatchWorkers.forEach((worker) => {
+        try {
+            worker.terminate();
+        } catch (terminateError) {
+            // Ignore worker cleanup failures.
+        }
+    });
+
+    heicBatchWorkers = [];
+    heicBatchWorkerIndex = 0;
+    rejectPendingHeicBatchWorkerRequests(error);
+}
+
+function createHeicBatchWorker() {
     const worker = new Worker("./heic-worker.js");
 
     worker.onmessage = (event) => {
@@ -35,12 +49,71 @@ function getHeicBatchWorker() {
     };
 
     worker.onerror = () => {
-        heicBatchWorker = null;
-        rejectPendingHeicBatchWorkerRequests(new Error("HEIC worker failed"));
+        resetHeicWorkerPool(new Error("HEIC worker failed"));
     };
 
-    heicBatchWorker = worker;
-    return heicBatchWorker;
+    return worker;
+}
+
+function getHeicBatchWorker() {
+    if (!window.Worker) {
+        return null;
+    }
+
+    const poolSize = getHeicWorkerPoolSize();
+
+    while (heicBatchWorkers.length < poolSize) {
+        heicBatchWorkers.push(createHeicBatchWorker());
+    }
+
+    if (heicBatchWorkers.length === 0) {
+        return null;
+    }
+
+    const worker = heicBatchWorkers[heicBatchWorkerIndex % heicBatchWorkers.length];
+    heicBatchWorkerIndex = (heicBatchWorkerIndex + 1) % heicBatchWorkers.length;
+    return worker;
+}
+
+const optionalScriptLoads = {};
+
+function loadOptionalScript(src, globalName) {
+    if (window[globalName]) {
+        return Promise.resolve(window[globalName]);
+    }
+
+    if (optionalScriptLoads[src]) {
+        return optionalScriptLoads[src];
+    }
+
+    optionalScriptLoads[src] = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = src;
+        script.onload = () => {
+            if (window[globalName]) {
+                resolve(window[globalName]);
+                return;
+            }
+
+            delete optionalScriptLoads[src];
+            reject(new Error(`Optional script loaded without ${globalName}: ${src}`));
+        };
+        script.onerror = () => {
+            delete optionalScriptLoads[src];
+            reject(new Error(`Optional script failed to load: ${src}`));
+        };
+        document.head.appendChild(script);
+    });
+
+    return optionalScriptLoads[src];
+}
+
+function ensureHeic2AnyLoaded() {
+    return loadOptionalScript("./vendor/heic2any.min.js", "heic2any");
+}
+
+function ensureJSZipLoaded() {
+    return loadOptionalScript("./vendor/jszip.min.js", "JSZip");
 }
 
 function loadImage(file) {
@@ -49,7 +122,7 @@ function loadImage(file) {
             throw error;
         }
 
-        const convertedBlob = await convertHeicToJpegBlob(file);
+        const convertedBlob = await convertHeicToJpegBlobWithCache(file);
         return loadImageFromBlob(convertedBlob, file.name);
     });
 }
@@ -87,6 +160,7 @@ function loadImageFromBlob(blob, sourceName = "image") {
 
 async function convertHeicToJpegBlob(file) {
     try {
+        await ensureHeic2AnyLoaded();
         const converted = await heic2any({
             blob: file,
             toType: "image/jpeg",
@@ -103,7 +177,7 @@ async function convertHeicToJpegBlob(file) {
     }
 }
 
-async function convertHeicToJpegBlobInWorker(file) {
+async function convertHeicToJpegBlobInWorkerUncached(file) {
     const worker = getHeicBatchWorker();
 
     if (!worker) {
@@ -123,13 +197,26 @@ async function convertHeicToJpegBlobInWorker(file) {
     });
 }
 
+function convertHeicToJpegBlobWithCache(file) {
+    if (!heicConversionCache.has(file)) {
+        const conversionPromise = convertHeicToJpegBlobInWorkerUncached(file).catch((error) => {
+            heicConversionCache.delete(file);
+            throw error;
+        });
+
+        heicConversionCache.set(file, conversionPromise);
+    }
+
+    return heicConversionCache.get(file);
+}
+
 function loadBatchImage(file) {
     return loadImageFromBlob(file, file.name).catch(async (error) => {
         if (!isHeicFile(file)) {
             throw error;
         }
 
-        const convertedBlob = await convertHeicToJpegBlobInWorker(file);
+        const convertedBlob = await convertHeicToJpegBlobWithCache(file);
         return loadImageFromBlob(convertedBlob, file.name);
     });
 }
@@ -511,7 +598,19 @@ function showProcessingError(error) {
     resetExportSummary();
     setPrimaryButtonState(false, "ចាប់ផ្ដើមដំណើរការ");
     ui.progressText.innerText = "មានបញ្ហាក្នុងការរៀបចំរូបភាព";
-    alert(error.message || "Image processing failed");
+    showUserError("ការរៀបចំរូបភាពបរាជ័យ។");
+}
+
+function showProcessingCancelled() {
+    setProcessingState(false);
+    resetExportSummary();
+    setPrimaryButtonState(false, "ចាប់ផ្ដើមដំណើរការ");
+    zipContainer.style.display = "none";
+    cleanupObjectUrls(currentZipDownloads.map((item) => item.url));
+    currentZipDownloads = [];
+    mobileShareState = null;
+    ui.progressText.innerText = "បានបោះបង់";
+    showUserSuccess("បានបោះបង់ដំណើរការ។");
 }
 
 async function resetAndroidFolderSaveState() {
@@ -526,7 +625,7 @@ async function resetAndroidFolderSaveState() {
 
 async function chooseAndroidSaveDirectory() {
     const directoryHandle = await requestAndroidSaveDirectory();
-    ui.progressText.innerText = "បានប្តូរថតរក្សាទុករួចរាល់";
+    ui.progressText.innerText = "បានប្តូរFolderរក្សាទុករួចរាល់";
     return directoryHandle;
 }
 
@@ -574,16 +673,16 @@ async function handleChangeSaveFolderClick() {
 
     try {
         ui.changeSaveFolderBtn.disabled = true;
-        ui.progressText.innerText = "សូមជ្រើសថតថ្មីដើម្បីរក្សាទុករូប";
+        ui.progressText.innerText = "សូមជ្រើសFolderថ្មីដើម្បីរក្សាទុករូប";
         await chooseAndroidSaveDirectory();
     } catch (error) {
         if (error.name === "AbortError") {
-            ui.progressText.innerText = "បានបោះបង់ការជ្រើសថត";
+            ui.progressText.innerText = "បានបោះបង់ការជ្រើសFolder";
             return;
         }
 
-        ui.progressText.innerText = "មិនអាចប្តូរថតរក្សាទុកបាន";
-        alert(error.message || "Could not change the save folder");
+        ui.progressText.innerText = "មិនអាចប្តូរFolderរក្សាទុកបាន";
+        showUserError("មិនអាចប្តូរFolderរក្សាទុកបាន។");
     } finally {
         ui.changeSaveFolderBtn.disabled = false;
     }
@@ -697,6 +796,42 @@ function draw() {
 // ==========================================
 // SECTOR 5: UI CONTROLLERS
 // ==========================================
+let pendingConfigSaveTimer = null;
+let pendingDrawFrame = null;
+
+function scheduleConfigSave() {
+    clearTimeout(pendingConfigSaveTimer);
+    pendingConfigSaveTimer = setTimeout(() => {
+        pendingConfigSaveTimer = null;
+        saveConfig();
+    }, 200);
+}
+
+function flushConfigSave() {
+    if (pendingConfigSaveTimer) {
+        clearTimeout(pendingConfigSaveTimer);
+        pendingConfigSaveTimer = null;
+    }
+
+    saveConfig();
+}
+
+function scheduleDraw() {
+    if (pendingDrawFrame) {
+        return;
+    }
+
+    pendingDrawFrame = requestAnimationFrame(() => {
+        pendingDrawFrame = null;
+        draw();
+    });
+}
+
+function scheduleConfigAndDraw() {
+    scheduleConfigSave();
+    scheduleDraw();
+}
+
 function updatePositionUI(val) {
     hiddenPosInput.value = val;
     posButtons.forEach(b => b.classList.toggle('active', b.getAttribute('data-value') === val));
@@ -712,18 +847,20 @@ posButtons.forEach(btn => {
 
 ui.sizeSlider.oninput = (e) => {
     ui.sizeVal.innerText = e.target.value + "%";
-    saveConfig();
-    draw();
+    scheduleConfigAndDraw();
 };
 
 ui.logoOpacity.oninput = (e) => {
     ui.opacityVal.innerText = e.target.value + "%";
-    saveConfig();
-    draw();
+    scheduleConfigAndDraw();
 };
 
+ui.sizeSlider.addEventListener('change', flushConfigSave);
+ui.logoOpacity.addEventListener('change', flushConfigSave);
+
 document.querySelectorAll('.fancy-input').forEach(el => {
-    el.addEventListener('input', () => { saveConfig(); draw(); });
+    el.addEventListener('input', scheduleConfigAndDraw);
+    el.addEventListener('change', flushConfigSave);
 });
 
 // ==========================================
@@ -751,3 +888,24 @@ document.getElementById('nextZone').onclick = () => {
 document.getElementById('prevZone').onclick = () => {
     if (currentIdx > 0) { currentIdx--; loadCurrentImg(); }
 };
+
+function handleNavZoneKeydown(event, action) {
+    if (event.key !== "Enter" && event.key !== " ") {
+        return;
+    }
+
+    event.preventDefault();
+    action();
+}
+
+document.getElementById('nextZone').addEventListener('keydown', (event) => {
+    handleNavZoneKeydown(event, () => {
+        if (currentIdx < bgFiles.length - 1) { currentIdx++; loadCurrentImg(); }
+    });
+});
+
+document.getElementById('prevZone').addEventListener('keydown', (event) => {
+    handleNavZoneKeydown(event, () => {
+        if (currentIdx > 0) { currentIdx--; loadCurrentImg(); }
+    });
+});

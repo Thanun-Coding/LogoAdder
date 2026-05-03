@@ -93,5 +93,3 @@ GitHub Pages settings:
 - If cached app-shell files change, update `CACHE_NAME` in `sw.js`.
 - Keep `vendor/` files treated as third-party assets.
 - Preserve UTF-8 encoding because user-facing text includes Khmer.
-- `script.js` is a legacy monolithic script and is not loaded by `index.html`.
-

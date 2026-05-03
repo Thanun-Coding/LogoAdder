@@ -1,4 +1,4 @@
-const CACHE_NAME = 'logoadder-shell-v1';
+const CACHE_NAME = 'logoadder-shell-v8';
 const APP_SHELL = [
   './',
   './index.html',
@@ -8,8 +8,6 @@ const APP_SHELL = [
   './export-flows.js',
   './app.js',
   './heic-worker.js',
-  './vendor/jszip.min.js',
-  './vendor/heic2any.min.js',
   './LogoAdder.png',
   './myicon.ico',
   './manifest.webmanifest',
