@@ -248,9 +248,11 @@ async function startZipExport(btn, options = {}) {
             throwIfExportCancelled();
             const zip = new JSZip();
             const end = Math.min(start + filesPerZip, bgFiles.length);
+            preconvertDesktopHeicFiles(bgFiles, start, end);
 
             for (let i = start; i < end; i++) {
                 throwIfExportCancelled();
+                preconvertDesktopHeicFiles(bgFiles, i, end);
                 const progressMessage = buildCurrentFileProgressText("កំពុងដំណើរការ", bgFiles[i], i + 1, bgFiles.length);
                 updateExportProgress(i, bgFiles.length, progressMessage);
                 const { outputBlob, previewBlob } = await processImageToBlob(bgFiles[i], offCanvas);

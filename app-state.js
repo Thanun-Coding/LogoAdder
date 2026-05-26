@@ -18,9 +18,21 @@ const hiddenPosInput = document.getElementById('position');
 const dropOverlay = document.getElementById('drop-overlay');
 const ui = {
     appStatusMessage: document.getElementById('appStatusMessage'),
+    adjustPanel: document.getElementById('adjustPanel'),
+    adjustTabBtn: document.getElementById('adjustTabBtn'),
+    applyCropBtn: document.getElementById('applyCropBtn'),
+    autoAllBtn: document.getElementById('autoAllBtn'),
+    autoCurrentBtn: document.getElementById('autoCurrentBtn'),
+    brightnessSlider: document.getElementById('brightnessSlider'),
+    brightnessValue: document.getElementById('brightnessValue'),
     cancelExportBtn: document.getElementById('cancelExportBtn'),
     canvasPlaceholder: document.getElementById('canvas-placeholder'),
     changeSaveFolderBtn: document.getElementById('changeSaveFolderBtn'),
+    contrastSlider: document.getElementById('contrastSlider'),
+    contrastValue: document.getElementById('contrastValue'),
+    cropBox: document.getElementById('cropBox'),
+    cropOverlay: document.getElementById('cropOverlay'),
+    cropStatus: document.getElementById('cropStatus'),
     dismissGuidanceBtn: document.getElementById('dismissGuidanceBtn'),
     downloadBtn: document.getElementById('downloadBtn'),
     exportProgressContainer: document.querySelector('.export-progress-container'),
@@ -34,6 +46,11 @@ const ui = {
     exportSummaryTitle: document.getElementById('exportSummaryTitle'),
     fileCount: document.getElementById('fileCount'),
     finalZipBtn: document.getElementById('finalZipBtn'),
+    fineRotateSlider: document.getElementById('fineRotateSlider'),
+    flipHorizontalBtn: document.getElementById('flipHorizontalBtn'),
+    flipVerticalBtn: document.getElementById('flipVerticalBtn'),
+    highlightsSlider: document.getElementById('highlightsSlider'),
+    highlightsValue: document.getElementById('highlightsValue'),
     logoOpacity: document.getElementById('logo-opacity'),
     logoStatus: document.getElementById('logoStatus'),
     marginX: document.getElementById('marginX'),
@@ -45,9 +62,24 @@ const ui = {
     progressFill: document.getElementById('export-progress-fill'),
     progressText: document.getElementById('progress-text'),
     qualityPreset: document.getElementById('qualityPreset'),
+    resetAdjustBtn: document.getElementById('resetAdjustBtn'),
+    resetCropBtn: document.getElementById('resetCropBtn'),
+    resetRotateBtn: document.getElementById('resetRotateBtn'),
+    rotateCropPanel: document.getElementById('rotateCropPanel'),
+    rotateCropTabBtn: document.getElementById('rotateCropTabBtn'),
+    rotateLeftBtn: document.getElementById('rotateLeftBtn'),
+    rotateRightBtn: document.getElementById('rotateRightBtn'),
+    rotationValue: document.getElementById('rotationValue'),
+    saturationSlider: document.getElementById('saturationSlider'),
+    saturationValue: document.getElementById('saturationValue'),
+    shadowsSlider: document.getElementById('shadowsSlider'),
+    shadowsValue: document.getElementById('shadowsValue'),
     sizeSlider: document.getElementById('sizeSlider'),
     sizePreset: document.getElementById('sizePreset'),
     sizeVal: document.getElementById('sizeVal'),
+    startCropBtn: document.getElementById('startCropBtn'),
+    temperatureSlider: document.getElementById('temperatureSlider'),
+    temperatureValue: document.getElementById('temperatureValue'),
     placeholderText: document.querySelector('.placeholder-text'),
     firstRunGuidance: document.getElementById('firstRunGuidance'),
     firstRunGuidanceBody: document.getElementById('firstRunGuidanceBody')
@@ -68,10 +100,15 @@ let pendingAppReload = false;
 let hasReloadedForUpdate = false;
 let exportSummaryState = null;
 let exportFailureItems = [];
+let activePhotoEditTab = "adjust";
+let cropModeActive = false;
+let cropPointerState = null;
 let heicBatchWorkers = [];
 let heicBatchWorkerIndex = 0;
 let heicBatchWorkerRequestId = 0;
 const heicConversionCache = new WeakMap();
+const autoAdjustmentCache = new WeakMap();
+const photoEditStates = [];
 const pendingHeicBatchWorkerRequests = new Map();
 
 const DEFAULT_PLACEHOLDER_TEXT = ui.placeholderText ? ui.placeholderText.innerText : "សូមជ្រើសរើសរូបភាពដើម្បីចាប់ផ្ដើម";
@@ -83,6 +120,8 @@ const RESULT_PREVIEW_PAGE_SIZE = 20;
 const AUTO_DOWNLOAD_THRESHOLD = 20;
 const ANDROID_FILE_TIMEOUT_MS = 20000;
 const ANDROID_HEIC_COOLDOWN_MS = 60;
+const DESKTOP_HEIC_PRECONVERT_AHEAD = 2;
+const CROP_MIN_SIZE = 0.06;
 const DIRECTORY_DB_NAME = "logoAdderDirectoryAccess";
 const DIRECTORY_STORE_NAME = "handles";
 const DIRECTORY_HANDLE_KEY = "androidSaveDirectory";
@@ -100,6 +139,16 @@ const SIZE_PRESET_MAP = {
     medium: 2000000,
     small: 1200000
 };
+const ADJUSTMENT_KEYS = ["brightness", "contrast", "highlights", "shadows", "saturation", "temperature"];
+const DEFAULT_ADJUSTMENTS = {
+    brightness: 0,
+    contrast: 0,
+    highlights: 0,
+    shadows: 0,
+    saturation: 0,
+    temperature: 0
+};
+let fallbackPhotoAdjustments = { ...DEFAULT_ADJUSTMENTS };
 
 function reloadForPendingUpdate() {
     if (hasReloadedForUpdate) {
@@ -545,6 +594,9 @@ async function loadConfig() {
             ui.sizePreset.value = SIZE_PRESET_MAP[config.sizePreset] ? config.sizePreset : "original";
         }
         updatePositionUI(config.position);
+        if (typeof syncPhotoEditControls === "function") {
+            syncPhotoEditControls();
+        }
     }
 
     if (savedLogo) {

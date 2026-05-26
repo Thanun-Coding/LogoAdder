@@ -220,7 +220,139 @@
                 <div class="nav-indicator">❯</div>
               </div>
             </div>
+            <div id="cropOverlay" class="crop-overlay" aria-hidden="true">
+              <div id="cropBox" class="crop-box">
+                <span class="crop-edge top" data-crop-action="resize-n"></span>
+                <span class="crop-edge right" data-crop-action="resize-e"></span>
+                <span class="crop-edge bottom" data-crop-action="resize-s"></span>
+                <span class="crop-edge left" data-crop-action="resize-w"></span>
+                <span class="crop-handle top-left" data-crop-action="resize-nw"></span>
+                <span class="crop-handle top-right" data-crop-action="resize-ne"></span>
+                <span class="crop-handle bottom-left" data-crop-action="resize-sw"></span>
+                <span class="crop-handle bottom-right" data-crop-action="resize-se"></span>
+              </div>
+            </div>
           </div>
+          <section class="photo-edit-panel" aria-label="Photo editing tools">
+            <div class="photo-edit-shell">
+              <div class="photo-edit-topline">
+                <div class="photo-edit-brand">
+                  <span class="photo-edit-icon" aria-hidden="true">✦</span>
+                  <div>
+                    <div class="photo-edit-title">Photo Edit</div>
+                    <div class="photo-edit-subtitle">Enhance photos</div>
+                  </div>
+                </div>
+                <div class="photo-edit-tabs" role="tablist" aria-label="Photo edit tools">
+                  <button
+                    id="adjustTabBtn"
+                    class="photo-edit-tab active"
+                    type="button"
+                    role="tab"
+                    aria-selected="true"
+                    aria-controls="adjustPanel"
+                  >
+                    Adjustment
+                  </button>
+                  <button
+                    id="rotateCropTabBtn"
+                    class="photo-edit-tab"
+                    type="button"
+                    role="tab"
+                    aria-selected="false"
+                    aria-controls="rotateCropPanel"
+                  >
+                    Rotate / Crop
+                  </button>
+                </div>
+              </div>
+
+              <div id="adjustPanel" class="photo-edit-content active" role="tabpanel">
+                <div class="adjust-header-row">
+                  <div class="edit-section-label">Adjustment</div>
+                  <div class="edit-actions">
+                    <button id="autoCurrentBtn" class="edit-btn auto-current" type="button">Auto Current</button>
+                    <button id="autoAllBtn" class="edit-btn auto-all" type="button">Auto All</button>
+                    <button id="resetAdjustBtn" class="edit-btn reset-action" type="button">Reset</button>
+                  </div>
+                </div>
+                <div class="adjust-grid">
+                  <div class="adjust-column">
+                    <div class="edit-slider">
+                      <label for="brightnessSlider">Brightness</label>
+                      <input id="brightnessSlider" type="range" min="-50" max="50" value="0" />
+                      <span id="brightnessValue" class="edit-value">0</span>
+                    </div>
+                    <div class="edit-slider">
+                      <label for="contrastSlider">Contrast</label>
+                      <input id="contrastSlider" type="range" min="-50" max="50" value="0" />
+                      <span id="contrastValue" class="edit-value">0</span>
+                    </div>
+                  </div>
+                  <div class="adjust-column">
+                    <div class="edit-slider">
+                      <label for="highlightsSlider">Highlights</label>
+                      <input id="highlightsSlider" type="range" min="-50" max="50" value="0" />
+                      <span id="highlightsValue" class="edit-value">0</span>
+                    </div>
+                    <div class="edit-slider">
+                      <label for="shadowsSlider">Shadows</label>
+                      <input id="shadowsSlider" type="range" min="-50" max="50" value="0" />
+                      <span id="shadowsValue" class="edit-value">0</span>
+                    </div>
+                  </div>
+                  <div class="adjust-column">
+                    <div class="edit-slider">
+                      <label for="saturationSlider">Saturation</label>
+                      <input id="saturationSlider" type="range" min="-50" max="50" value="0" />
+                      <span id="saturationValue" class="edit-value">0</span>
+                    </div>
+                    <div class="edit-slider">
+                      <label for="temperatureSlider">Temperature</label>
+                      <div class="temperature-control">
+                        <input id="temperatureSlider" type="range" min="-50" max="50" value="0" aria-describedby="temperatureHint" />
+                        <div id="temperatureHint" class="temperature-hint" aria-hidden="true">
+                          <span>Cool</span>
+                          <span>Warm</span>
+                        </div>
+                      </div>
+                      <span id="temperatureValue" class="edit-value">0</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div id="rotateCropPanel" class="photo-edit-content" role="tabpanel" hidden>
+                <div class="rotate-crop-grid">
+                  <div class="rotate-tools">
+                    <button id="rotateRightBtn" class="edit-btn icon-btn svg-icon rotate-cycle-btn" type="button" title="Rotate 90 degrees" aria-label="Rotate 90 degrees"></button>
+                    <button id="flipHorizontalBtn" class="edit-btn icon-btn svg-icon flip-horizontal-icon" type="button" title="Flip horizontal" aria-label="Flip horizontal"></button>
+                    <button id="flipVerticalBtn" class="edit-btn icon-btn svg-icon flip-vertical-icon" type="button" title="Flip vertical" aria-label="Flip vertical"></button>
+                    <span id="rotationValue" class="angle-value">0°</span>
+                    <div class="angle-ruler">
+                      <input id="fineRotateSlider" class="angle-slider" type="range" min="-180" max="180" step="1" value="0" aria-label="Fine rotation angle" />
+                      <div class="angle-scale" aria-hidden="true">
+                        <span>-180°</span>
+                        <span>-90°</span>
+                        <span>0°</span>
+                        <span>90°</span>
+                        <span>180°</span>
+                      </div>
+                    </div>
+                    <button id="resetRotateBtn" class="edit-btn reset-action" type="button">Reset</button>
+                  </div>
+                  <div class="crop-tools">
+                    <div class="crop-button-row">
+                      <button id="startCropBtn" class="edit-btn" type="button">Crop</button>
+                      <button id="applyCropBtn" class="edit-btn apply" type="button" disabled>Apply</button>
+                      <button id="resetCropBtn" class="edit-btn reset-action" type="button">Reset</button>
+                    </div>
+                    <span id="cropStatus" class="crop-status">Drag handles to crop</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
           <div class="export-progress-container">
             <div class="progress-info">
               <span id="progress-text">កំពុងរៀបចំ........... (0%)</span>

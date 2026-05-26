@@ -1,4 +1,4 @@
-const CACHE_NAME = 'logoadder-shell-v8';
+const CACHE_NAME = 'logoadder-shell-v14';
 const APP_SHELL = [
   './',
   './index.html',
@@ -11,6 +11,9 @@ const APP_SHELL = [
   './LogoAdder.png',
   './myicon.ico',
   './manifest.webmanifest',
+  './icons/arrows-clockwise.svg',
+  './icons/flip-horizontal.svg',
+  './icons/flip-vertical.svg',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png'

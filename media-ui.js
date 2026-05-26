@@ -210,6 +210,31 @@ function convertHeicToJpegBlobWithCache(file) {
     return heicConversionCache.get(file);
 }
 
+function preconvertDesktopHeicFiles(files, startIndex, endIndex) {
+    if (isMobileDevice() || !window.Worker) {
+        return;
+    }
+
+    let scheduledCount = 0;
+
+    for (
+        let i = startIndex;
+        i < endIndex && scheduledCount < DESKTOP_HEIC_PRECONVERT_AHEAD;
+        i++
+    ) {
+        const file = files[i];
+
+        if (!isHeicFile(file)) {
+            continue;
+        }
+
+        scheduledCount += 1;
+        convertHeicToJpegBlobWithCache(file).catch(() => {
+            // The export loop awaits the cached conversion and reports failures in order.
+        });
+    }
+}
+
 function loadBatchImage(file) {
     return loadImageFromBlob(file, file.name).catch(async (error) => {
         if (!isHeicFile(file)) {
@@ -306,6 +331,332 @@ function getOutputSize(width, height) {
         width: Math.round(width * scale),
         height: Math.round(height * scale)
     };
+}
+
+function clampNumber(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+}
+
+function getPhotoEditState(index = currentIdx) {
+    if (!photoEditStates[index]) {
+        photoEditStates[index] = {
+            adjustments: { ...fallbackPhotoAdjustments },
+            cropRect: null,
+            draftRotation: null,
+            flipHorizontal: false,
+            flipVertical: false,
+            rotation: 0
+        };
+    }
+
+    return photoEditStates[index];
+}
+
+function getRotationDegrees(editState, options = {}) {
+    const rotationValue = options.useDraft !== false && editState && typeof editState.draftRotation === "number"
+        ? editState.draftRotation
+        : editState && typeof editState.rotation === "number"
+            ? editState.rotation
+            : 0;
+
+    return rotationValue;
+}
+
+function normalizeDegrees(value) {
+    const normalized = ((value % 360) + 360) % 360;
+    return normalized > 180 ? normalized - 360 : normalized;
+}
+
+function getCombinedAdjustments(sourceImage) {
+    return { ...getPhotoEditState().adjustments };
+}
+
+function getPhotoAdjustmentsForRender(editState) {
+    return { ...DEFAULT_ADJUSTMENTS, ...(editState && editState.adjustments ? editState.adjustments : fallbackPhotoAdjustments) };
+}
+
+function getHistogramPercentile(histogram, totalPixels, percentile) {
+    const target = Math.max(1, Math.round(totalPixels * percentile));
+    let count = 0;
+
+    for (let i = 0; i < histogram.length; i++) {
+        count += histogram[i];
+
+        if (count >= target) {
+            return i;
+        }
+    }
+
+    return histogram.length - 1;
+}
+
+function getAutoAdjustments(sourceImage) {
+    if (autoAdjustmentCache.has(sourceImage)) {
+        return autoAdjustmentCache.get(sourceImage);
+    }
+
+    const sampleCanvas = document.createElement('canvas');
+    const sampleSize = 96;
+    const scale = Math.min(sampleSize / sourceImage.width, sampleSize / sourceImage.height, 1);
+    const sampleWidth = Math.max(1, Math.round(sourceImage.width * scale));
+    const sampleHeight = Math.max(1, Math.round(sourceImage.height * scale));
+    const sampleCtx = sampleCanvas.getContext('2d');
+
+    sampleCanvas.width = sampleWidth;
+    sampleCanvas.height = sampleHeight;
+    sampleCtx.drawImage(sourceImage, 0, 0, sampleWidth, sampleHeight);
+
+    const imageData = sampleCtx.getImageData(0, 0, sampleWidth, sampleHeight).data;
+    const histogram = new Array(256).fill(0);
+    const totalPixels = imageData.length / 4;
+    let totalLuma = 0;
+    let darkPixels = 0;
+    let brightPixels = 0;
+    let saturationTotal = 0;
+    let neutralWarmthTotal = 0;
+    let neutralPixelCount = 0;
+
+    for (let i = 0; i < imageData.length; i += 4) {
+        const r = imageData[i];
+        const g = imageData[i + 1];
+        const b = imageData[i + 2];
+        const luma = (r * 0.2126) + (g * 0.7152) + (b * 0.0722);
+        const lumaIndex = clampNumber(Math.round(luma), 0, 255);
+        const maxChannel = Math.max(r, g, b);
+        const minChannel = Math.min(r, g, b);
+        const saturation = maxChannel > 0 ? (maxChannel - minChannel) / maxChannel : 0;
+
+        histogram[lumaIndex] += 1;
+        totalLuma += luma;
+        saturationTotal += saturation;
+
+        if (luma < 64) {
+            darkPixels += 1;
+        }
+
+        if (luma > 210) {
+            brightPixels += 1;
+        }
+
+        if (luma > 48 && luma < 235 && saturation < 0.32) {
+            neutralWarmthTotal += (r - b) / 255;
+            neutralPixelCount += 1;
+        }
+    }
+
+    resetCanvas(sampleCanvas);
+
+    const avgLuma = totalLuma / totalPixels;
+    const luma02 = getHistogramPercentile(histogram, totalPixels, 0.02);
+    const luma10 = getHistogramPercentile(histogram, totalPixels, 0.10);
+    const luma90 = getHistogramPercentile(histogram, totalPixels, 0.90);
+    const luma98 = getHistogramPercentile(histogram, totalPixels, 0.98);
+    const dynamicRange = luma98 - luma02;
+    const darkRatio = darkPixels / totalPixels;
+    const brightRatio = brightPixels / totalPixels;
+    const avgSaturation = saturationTotal / totalPixels;
+    const neutralWarmth = neutralPixelCount > Math.max(12, totalPixels * 0.03)
+        ? neutralWarmthTotal / neutralPixelCount
+        : 0;
+    const auto = {
+        brightness: clampNumber(Math.round((134 - avgLuma) / 6.5), -18, 18),
+        contrast: clampNumber(dynamicRange < 145 ? Math.round((145 - dynamicRange) / 6) : dynamicRange > 220 ? -5 : 0, -8, 18),
+        highlights: clampNumber(
+            brightRatio > 0.16 || luma98 > 242
+                ? -14
+                : luma90 < 178
+                    ? 5
+                    : 0,
+            -18,
+            10
+        ),
+        shadows: clampNumber(
+            darkRatio > 0.18 || luma02 < 18
+                ? 14
+                : luma10 < 52
+                    ? 9
+                    : avgLuma < 112
+                        ? 6
+                        : 2,
+            0,
+            18
+        ),
+        saturation: clampNumber(avgSaturation < 0.18 ? 12 : avgSaturation < 0.32 ? 8 : avgSaturation > 0.62 ? -4 : 4, -8, 14),
+        temperature: clampNumber(Math.round(-neutralWarmth * 34), -10, 10)
+    };
+
+    autoAdjustmentCache.set(sourceImage, auto);
+    return auto;
+}
+
+function shouldApplyPixelAdjustments(adjustments) {
+    return Boolean(
+        adjustments.highlights ||
+        adjustments.shadows ||
+        adjustments.temperature
+    );
+}
+
+function applyPixelAdjustments(targetCanvas, adjustments) {
+    if (!shouldApplyPixelAdjustments(adjustments)) {
+        return;
+    }
+
+    const targetCtx = targetCanvas.getContext('2d', { willReadFrequently: true });
+    const imageData = targetCtx.getImageData(0, 0, targetCanvas.width, targetCanvas.height);
+    const pixels = imageData.data;
+    const highlights = (adjustments.highlights || 0) / 50;
+    const shadows = (adjustments.shadows || 0) / 50;
+    const temperature = adjustments.temperature || 0;
+
+    for (let i = 0; i < pixels.length; i += 4) {
+        const r = pixels[i];
+        const g = pixels[i + 1];
+        const b = pixels[i + 2];
+        const luma = ((r * 0.2126) + (g * 0.7152) + (b * 0.0722)) / 255;
+        const highlightWeight = Math.max(0, (luma - 0.55) / 0.45);
+        const shadowWeight = Math.max(0, (0.55 - luma) / 0.55);
+        const highlightDelta = highlights * highlightWeight * 38;
+        const shadowDelta = shadows * shadowWeight * 42;
+        const tempDelta = temperature * 1.2;
+
+        pixels[i] = clampNumber(r + highlightDelta + shadowDelta + tempDelta, 0, 255);
+        pixels[i + 1] = clampNumber(g + highlightDelta + shadowDelta, 0, 255);
+        pixels[i + 2] = clampNumber(b + highlightDelta + shadowDelta - tempDelta, 0, 255);
+    }
+
+    targetCtx.putImageData(imageData, 0, 0);
+}
+
+function getSmartRotationCropRect(sourceWidth, sourceHeight, rotationDegrees, baseWidth, baseHeight) {
+    const normalizedDegrees = normalizeDegrees(rotationDegrees);
+    const residualDegrees = Math.abs(normalizedDegrees) % 90;
+    const safeDegrees = residualDegrees > 45 ? 90 - residualDegrees : residualDegrees;
+
+    if (safeDegrees < 0.1) {
+        return null;
+    }
+
+    const radians = safeDegrees * Math.PI / 180;
+    const sin = Math.sin(radians);
+    const cos = Math.cos(radians);
+    const widthIsLonger = sourceWidth >= sourceHeight;
+    const longSide = widthIsLonger ? sourceWidth : sourceHeight;
+    const shortSide = widthIsLonger ? sourceHeight : sourceWidth;
+    let cropWidth;
+    let cropHeight;
+
+    if (shortSide <= 2 * sin * cos * longSide || Math.abs(sin - cos) < 0.000001) {
+        const halfShortSide = shortSide / 2;
+
+        if (widthIsLonger) {
+            cropWidth = halfShortSide / sin;
+            cropHeight = halfShortSide / cos;
+        } else {
+            cropWidth = halfShortSide / cos;
+            cropHeight = halfShortSide / sin;
+        }
+    } else {
+        const cosDoubleAngle = (cos * cos) - (sin * sin);
+        cropWidth = ((sourceWidth * cos) - (sourceHeight * sin)) / cosDoubleAngle;
+        cropHeight = ((sourceHeight * cos) - (sourceWidth * sin)) / cosDoubleAngle;
+    }
+
+    const width = clampNumber((cropWidth * 0.995) / baseWidth, CROP_MIN_SIZE, 1);
+    const height = clampNumber((cropHeight * 0.995) / baseHeight, CROP_MIN_SIZE, 1);
+
+    return {
+        x: (1 - width) / 2,
+        y: (1 - height) / 2,
+        width,
+        height
+    };
+}
+
+function cropCanvasByRect(sourceCanvas, cropRect) {
+    const croppedCanvas = document.createElement('canvas');
+    const cropX = Math.round(cropRect.x * sourceCanvas.width);
+    const cropY = Math.round(cropRect.y * sourceCanvas.height);
+    const cropWidth = Math.max(1, Math.round(cropRect.width * sourceCanvas.width));
+    const cropHeight = Math.max(1, Math.round(cropRect.height * sourceCanvas.height));
+
+    croppedCanvas.width = cropWidth;
+    croppedCanvas.height = cropHeight;
+    croppedCanvas
+        .getContext('2d')
+        .drawImage(sourceCanvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+    resetCanvas(sourceCanvas);
+
+    return croppedCanvas;
+}
+
+function getSourceFrameSize(sourceImage, editState, options = {}) {
+    const rotationDegrees = getRotationDegrees(editState, options);
+    const rotationRadians = Math.abs(rotationDegrees * Math.PI / 180);
+    const sin = Math.abs(Math.sin(rotationRadians));
+    const cos = Math.abs(Math.cos(rotationRadians));
+    const width = Math.max(1, Math.round(sourceImage.width * cos + sourceImage.height * sin));
+    const height = Math.max(1, Math.round(sourceImage.width * sin + sourceImage.height * cos));
+    const smartCropRect = options.disableSmartRotationCrop
+        ? null
+        : getSmartRotationCropRect(sourceImage.width, sourceImage.height, rotationDegrees, width, height);
+    const cropRect = !options.ignoreCrop && editState && editState.cropRect ? editState.cropRect : null;
+    const smartWidth = smartCropRect ? Math.max(1, Math.round(width * smartCropRect.width)) : width;
+    const smartHeight = smartCropRect ? Math.max(1, Math.round(height * smartCropRect.height)) : height;
+
+    if (!cropRect) {
+        return { width: smartWidth, height: smartHeight };
+    }
+
+    return {
+        width: Math.max(1, Math.round(smartWidth * cropRect.width)),
+        height: Math.max(1, Math.round(smartHeight * cropRect.height))
+    };
+}
+
+function buildEditedPhotoCanvas(sourceImage, editState, options = {}) {
+    const rotationDegrees = getRotationDegrees(editState, options);
+    const rotationRadians = rotationDegrees * Math.PI / 180;
+    const absRadians = Math.abs(rotationRadians);
+    const sin = Math.abs(Math.sin(absRadians));
+    const cos = Math.abs(Math.cos(absRadians));
+    const baseWidth = Math.max(1, Math.round(sourceImage.width * cos + sourceImage.height * sin));
+    const baseHeight = Math.max(1, Math.round(sourceImage.width * sin + sourceImage.height * cos));
+    let baseCanvas = document.createElement('canvas');
+    const baseCtx = baseCanvas.getContext('2d');
+    const adjustments = getPhotoAdjustmentsForRender(editState);
+    const cropRect = !options.ignoreCrop && editState && editState.cropRect ? editState.cropRect : null;
+
+    baseCanvas.width = baseWidth;
+    baseCanvas.height = baseHeight;
+    baseCtx.imageSmoothingEnabled = true;
+    baseCtx.imageSmoothingQuality = 'high';
+    baseCtx.filter = [
+        `brightness(${100 + (adjustments.brightness || 0)}%)`,
+        `contrast(${100 + (adjustments.contrast || 0)}%)`,
+        `saturate(${100 + (adjustments.saturation || 0)}%)`
+    ].join(" ");
+    baseCtx.translate(baseWidth / 2, baseHeight / 2);
+    baseCtx.rotate(rotationRadians);
+    baseCtx.scale(editState.flipHorizontal ? -1 : 1, editState.flipVertical ? -1 : 1);
+    baseCtx.drawImage(sourceImage, -sourceImage.width / 2, -sourceImage.height / 2);
+    baseCtx.setTransform(1, 0, 0, 1, 0, 0);
+    baseCtx.filter = "none";
+    applyPixelAdjustments(baseCanvas, adjustments);
+
+    const smartCropRect = options.disableSmartRotationCrop
+        ? null
+        : getSmartRotationCropRect(sourceImage.width, sourceImage.height, rotationDegrees, baseWidth, baseHeight);
+
+    if (smartCropRect) {
+        baseCanvas = cropCanvasByRect(baseCanvas, smartCropRect);
+    }
+
+    if (!cropRect) {
+        return baseCanvas;
+    }
+
+    return cropCanvasByRect(baseCanvas, cropRect);
 }
 
 function canvasToJpegBlob(targetCanvas, quality = 0.85) {
@@ -569,9 +920,12 @@ function updateShowMoreButton() {
 
 async function processImageToBlob(file, offCanvas) {
     const img = await loadBatchImage(file);
-    const outputSize = getOutputSize(img.width, img.height);
+    const fileIndex = bgFiles.indexOf(file);
+    const editState = getPhotoEditState(fileIndex >= 0 ? fileIndex : currentIdx);
+    const editedSize = getSourceFrameSize(img, editState);
+    const outputSize = getOutputSize(editedSize.width, editedSize.height);
 
-    render(offCanvas, img, logoImg, outputSize.width, outputSize.height);
+    render(offCanvas, img, logoImg, outputSize.width, outputSize.height, { editState });
 
     const outputBlob = await canvasToJpegBlob(offCanvas, getCurrentExportQuality());
     const previewBlob = await canvasToThumbnailBlob(offCanvas);
@@ -723,12 +1077,18 @@ window.addEventListener('drop', async (e) => {
     const files = Array.from(e.dataTransfer.files).filter(isSupportedImageFile);
     if (files.length > 0) {
         bgFiles = files;
+        photoEditStates.length = 0;
+        cropModeActive = false;
+        cropPointerState = null;
         handleFileSelection();
     }
 });
 
 bgInput.onchange = (e) => {
     bgFiles = Array.from(e.target.files);
+    photoEditStates.length = 0;
+    cropModeActive = false;
+    cropPointerState = null;
     handleFileSelection();
 };
 
@@ -748,49 +1108,64 @@ function handleFileSelection() {
 // ==========================================
 // SECTOR 4: CORE RENDERING ENGINE
 // ==========================================
-function render(targetCanvas, bg, logo, outputWidth = bg.width, outputHeight = bg.height) {
+function render(targetCanvas, bg, logo, outputWidth = null, outputHeight = null, options = {}) {
     const tCtx = targetCanvas.getContext('2d');
-    targetCanvas.width = outputWidth;
-    targetCanvas.height = outputHeight;
+    const editState = options.editState || getPhotoEditState();
+    const editedPhotoCanvas = buildEditedPhotoCanvas(bg, editState, options);
+    const finalWidth = outputWidth || editedPhotoCanvas.width;
+    const finalHeight = outputHeight || editedPhotoCanvas.height;
+
+    targetCanvas.width = finalWidth;
+    targetCanvas.height = finalHeight;
     tCtx.imageSmoothingEnabled = true;
     tCtx.imageSmoothingQuality = 'high';
-    tCtx.drawImage(bg, 0, 0, outputWidth, outputHeight);
+    tCtx.clearRect(0, 0, finalWidth, finalHeight);
+    tCtx.drawImage(editedPhotoCanvas, 0, 0, finalWidth, finalHeight);
+    resetCanvas(editedPhotoCanvas);
 
-    if (logo) {
-        const smartM = Math.min(outputWidth, outputHeight) * 0.005;
-        const mX = (parseInt(ui.marginX.value) || 0) + smartM;
-        const mY = (parseInt(ui.marginY.value) || 0) + smartM;
-        const sizePct = ui.sizeSlider.value / 100;
-        const opacityPct = ui.logoOpacity.value / 100;
-        const pos = hiddenPosInput.value;
-        
-        const sizeBase = Math.sqrt(outputWidth * outputHeight);
-        const requestedLogoWidth = sizeBase * sizePct * 0.94;
-        const maxLogoWidth = logo.naturalWidth || logo.width;
-        const lW = Math.min(requestedLogoWidth, maxLogoWidth);
-        const lH = (logo.height / logo.width) * lW;
-
-        let x = mX, y = mY;
-
-        if (pos === "top-right") x = outputWidth - lW - mX;
-        else if (pos === "bottom-left") y = outputHeight - lH - mY;
-        else if (pos === "bottom-right") {
-            x = outputWidth - lW - mX;
-            y = outputHeight - lH - mY;
-        } else if (pos === "center") {
-            x = (outputWidth - lW) / 2;
-            y = (outputHeight - lH) / 2;
-        }
-
-        tCtx.save();
-        tCtx.globalAlpha = opacityPct;
-        tCtx.drawImage(logo, x, y, lW, lH);
-        tCtx.restore();
+    if (!logo) {
+        return;
     }
+
+    const smartM = Math.min(finalWidth, finalHeight) * 0.005;
+    const mX = (parseInt(ui.marginX.value) || 0) + smartM;
+    const mY = (parseInt(ui.marginY.value) || 0) + smartM;
+    const sizePct = ui.sizeSlider.value / 100;
+    const opacityPct = ui.logoOpacity.value / 100;
+    const pos = hiddenPosInput.value;
+
+    const sizeBase = Math.sqrt(finalWidth * finalHeight);
+    const requestedLogoWidth = sizeBase * sizePct * 0.94;
+    const maxLogoWidth = logo.naturalWidth || logo.width;
+    const lW = Math.min(requestedLogoWidth, maxLogoWidth);
+    const lH = (logo.height / logo.width) * lW;
+
+    let x = mX, y = mY;
+
+    if (pos === "top-right") x = finalWidth - lW - mX;
+    else if (pos === "bottom-left") y = finalHeight - lH - mY;
+    else if (pos === "bottom-right") {
+        x = finalWidth - lW - mX;
+        y = finalHeight - lH - mY;
+    } else if (pos === "center") {
+        x = (finalWidth - lW) / 2;
+        y = (finalHeight - lH) / 2;
+    }
+
+    tCtx.save();
+    tCtx.globalAlpha = opacityPct;
+    tCtx.drawImage(logo, x, y, lW, lH);
+    tCtx.restore();
 }
 
 function draw() {
-    if (currentPreviewImg) render(canvas, currentPreviewImg, logoImg);
+    if (!currentPreviewImg) {
+        return;
+    }
+
+    const hideLogoForEditMode = cropModeActive || activePhotoEditTab === "rotate";
+    render(canvas, currentPreviewImg, hideLogoForEditMode ? null : logoImg, null, null, { ignoreCrop: cropModeActive });
+    updateCropOverlay();
 }
 
 // ==========================================
@@ -832,6 +1207,366 @@ function scheduleConfigAndDraw() {
     scheduleDraw();
 }
 
+function syncPhotoEditControls() {
+    const currentAdjustments = getPhotoEditState().adjustments;
+    const sliderMap = {
+        brightness: [ui.brightnessSlider, ui.brightnessValue],
+        contrast: [ui.contrastSlider, ui.contrastValue],
+        highlights: [ui.highlightsSlider, ui.highlightsValue],
+        shadows: [ui.shadowsSlider, ui.shadowsValue],
+        saturation: [ui.saturationSlider, ui.saturationValue],
+        temperature: [ui.temperatureSlider, ui.temperatureValue]
+    };
+
+    Object.entries(sliderMap).forEach(([key, pair]) => {
+        const [slider, valueEl] = pair;
+        if (slider) {
+            slider.value = currentAdjustments[key] || 0;
+        }
+        if (valueEl) {
+            valueEl.innerText = String(currentAdjustments[key] || 0);
+        }
+    });
+
+    syncCurrentPhotoEditControls();
+}
+
+function syncCurrentPhotoEditControls() {
+    const editState = getPhotoEditState();
+    const angle = getRotationDegrees(editState);
+
+    if (ui.fineRotateSlider) {
+        ui.fineRotateSlider.value = angle || 0;
+    }
+    if (ui.rotationValue) {
+        ui.rotationValue.innerText = `${angle}°`;
+    }
+    if (ui.applyCropBtn) {
+        ui.applyCropBtn.disabled = !cropModeActive;
+    }
+    if (ui.startCropBtn) {
+        ui.startCropBtn.classList.toggle("active", cropModeActive);
+        ui.startCropBtn.innerText = "Crop";
+    }
+    if (ui.cropStatus) {
+        ui.cropStatus.innerText = cropModeActive
+            ? "Drag handles or move the crop box"
+            : editState.cropRect
+                ? "Crop applied"
+                : "Drag handles to crop";
+    }
+
+    updateCropOverlay();
+}
+
+function setPhotoEditTab(tabName) {
+    activePhotoEditTab = tabName;
+    if (cropModeActive) {
+        exitCropMode(false);
+    }
+
+    const isAdjust = tabName === "adjust";
+    if (ui.adjustTabBtn) {
+        ui.adjustTabBtn.classList.toggle("active", isAdjust);
+        ui.adjustTabBtn.setAttribute("aria-selected", String(isAdjust));
+    }
+    if (ui.rotateCropTabBtn) {
+        ui.rotateCropTabBtn.classList.toggle("active", !isAdjust);
+        ui.rotateCropTabBtn.setAttribute("aria-selected", String(!isAdjust));
+    }
+    if (ui.adjustPanel) {
+        ui.adjustPanel.classList.toggle("active", isAdjust);
+        ui.adjustPanel.hidden = !isAdjust;
+    }
+    if (ui.rotateCropPanel) {
+        ui.rotateCropPanel.classList.toggle("active", !isAdjust);
+        ui.rotateCropPanel.hidden = isAdjust;
+    }
+}
+
+function setAdjustmentValue(key, value) {
+    const editState = getPhotoEditState();
+    editState.adjustments[key] = clampNumber(Number(value) || 0, -50, 50);
+    syncPhotoEditControls();
+    scheduleDraw();
+}
+
+function resetAdjustments() {
+    getPhotoEditState().adjustments = { ...DEFAULT_ADJUSTMENTS };
+    syncPhotoEditControls();
+    scheduleDraw();
+}
+
+function applyAutoAdjustToImage(index, sourceImage) {
+    const editState = getPhotoEditState(index);
+    if (!sourceImage) {
+        return;
+    }
+
+    editState.adjustments = { ...DEFAULT_ADJUSTMENTS, ...getAutoAdjustments(sourceImage) };
+}
+
+function applyAutoToCurrentPhoto() {
+    applyAutoAdjustToImage(currentIdx, currentPreviewImg);
+    syncPhotoEditControls();
+    scheduleDraw();
+}
+
+async function applyAutoToAllPhotos() {
+    if (bgFiles.length === 0) {
+        return;
+    }
+
+    const previousProgressText = ui.cropStatus ? ui.cropStatus.innerText : "";
+
+    for (let i = 0; i < bgFiles.length; i++) {
+        try {
+            const img = i === currentIdx && currentPreviewImg ? currentPreviewImg : await loadImage(bgFiles[i]);
+            applyAutoAdjustToImage(i, img);
+            if (ui.cropStatus) {
+                ui.cropStatus.innerText = `Auto ${i + 1}/${bgFiles.length}`;
+            }
+            await yieldToBrowser();
+        } catch (error) {
+            getPhotoEditState(i).adjustments = { ...DEFAULT_ADJUSTMENTS };
+        }
+    }
+
+    if (ui.cropStatus) {
+        ui.cropStatus.innerText = previousProgressText || "Auto applied";
+    }
+    syncPhotoEditControls();
+    scheduleDraw();
+}
+
+function rotateCurrentPhoto(degrees) {
+    const editState = getPhotoEditState();
+    const currentRotation = getRotationDegrees(editState);
+    editState.rotation = normalizeDegrees(currentRotation + degrees);
+    editState.draftRotation = null;
+    syncCurrentPhotoEditControls();
+    scheduleDraw();
+}
+
+function resetCurrentRotation() {
+    const editState = getPhotoEditState();
+    editState.rotation = 0;
+    editState.draftRotation = null;
+    syncCurrentPhotoEditControls();
+    scheduleDraw();
+}
+
+function setFineRotation(value) {
+    const editState = getPhotoEditState();
+    editState.rotation = normalizeDegrees(Number(value) || 0);
+    editState.draftRotation = null;
+    syncCurrentPhotoEditControls();
+    scheduleDraw();
+}
+
+function toggleFlip(axis) {
+    const editState = getPhotoEditState();
+    if (axis === "horizontal") {
+        editState.flipHorizontal = !editState.flipHorizontal;
+    } else {
+        editState.flipVertical = !editState.flipVertical;
+    }
+    syncCurrentPhotoEditControls();
+    scheduleDraw();
+}
+
+function getDefaultCropRect() {
+    return {
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1
+    };
+}
+
+function startCropMode() {
+    if (!currentPreviewImg) {
+        return;
+    }
+
+    if (cropModeActive) {
+        exitCropMode(false);
+        return;
+    }
+
+    const editState = getPhotoEditState();
+    if (!editState.cropRect) {
+        editState.cropRect = getDefaultCropRect();
+    }
+
+    cropModeActive = true;
+    if (ui.cropOverlay) {
+        ui.cropOverlay.setAttribute("aria-hidden", "false");
+    }
+    syncCurrentPhotoEditControls();
+    draw();
+}
+
+function exitCropMode(shouldRedraw = true) {
+    cropModeActive = false;
+    cropPointerState = null;
+    if (ui.cropOverlay) {
+        ui.cropOverlay.setAttribute("aria-hidden", "true");
+    }
+    syncCurrentPhotoEditControls();
+    if (shouldRedraw) {
+        draw();
+    }
+}
+
+function applyCurrentCrop() {
+    exitCropMode(true);
+}
+
+function resetCurrentCrop() {
+    const editState = getPhotoEditState();
+    editState.cropRect = null;
+    cropModeActive = false;
+    if (ui.cropOverlay) {
+        ui.cropOverlay.setAttribute("aria-hidden", "true");
+    }
+    syncCurrentPhotoEditControls();
+    draw();
+}
+
+function updateCropOverlay() {
+    if (!ui.cropOverlay || !ui.cropBox) {
+        return;
+    }
+
+    const editState = getPhotoEditState();
+    const cropRect = cropModeActive && editState.cropRect ? editState.cropRect : null;
+    ui.cropOverlay.classList.toggle("active", Boolean(cropRect));
+    ui.cropOverlay.style.display = cropRect ? "block" : "none";
+
+    if (!cropRect) {
+        return;
+    }
+
+    const wrapperRect = ui.cropOverlay.parentElement.getBoundingClientRect();
+    const canvasRect = canvas.getBoundingClientRect();
+
+    ui.cropOverlay.style.left = `${canvasRect.left - wrapperRect.left}px`;
+    ui.cropOverlay.style.top = `${canvasRect.top - wrapperRect.top}px`;
+    ui.cropOverlay.style.width = `${canvasRect.width}px`;
+    ui.cropOverlay.style.height = `${canvasRect.height}px`;
+    ui.cropBox.style.left = `${cropRect.x * 100}%`;
+    ui.cropBox.style.top = `${cropRect.y * 100}%`;
+    ui.cropBox.style.width = `${cropRect.width * 100}%`;
+    ui.cropBox.style.height = `${cropRect.height * 100}%`;
+}
+
+function getCropPointerPosition(event) {
+    const rect = ui.cropOverlay.getBoundingClientRect();
+    return {
+        x: clampNumber((event.clientX - rect.left) / rect.width, 0, 1),
+        y: clampNumber((event.clientY - rect.top) / rect.height, 0, 1)
+    };
+}
+
+function normalizeCropRect(rect) {
+    const x = clampNumber(rect.x, 0, 1 - CROP_MIN_SIZE);
+    const y = clampNumber(rect.y, 0, 1 - CROP_MIN_SIZE);
+    const width = clampNumber(rect.width, CROP_MIN_SIZE, 1 - x);
+    const height = clampNumber(rect.height, CROP_MIN_SIZE, 1 - y);
+
+    return { x, y, width, height };
+}
+
+function getCropActionFromEvent(event) {
+    const actionTarget = event.target.closest("[data-crop-action]");
+    if (actionTarget) {
+        return actionTarget.getAttribute("data-crop-action");
+    }
+
+    if (event.target === ui.cropBox) {
+        return "move";
+    }
+
+    return "";
+}
+
+function updateCropRectByAction(startRect, startPoint, currentPoint, action) {
+    const dx = currentPoint.x - startPoint.x;
+    const dy = currentPoint.y - startPoint.y;
+    let nextRect = { ...startRect };
+
+    if (action === "move") {
+        nextRect.x = clampNumber(startRect.x + dx, 0, 1 - startRect.width);
+        nextRect.y = clampNumber(startRect.y + dy, 0, 1 - startRect.height);
+        return nextRect;
+    }
+
+    if (action.includes("w")) {
+        const right = startRect.x + startRect.width;
+        nextRect.x = clampNumber(startRect.x + dx, 0, right - CROP_MIN_SIZE);
+        nextRect.width = right - nextRect.x;
+    }
+
+    if (action.includes("e")) {
+        nextRect.width = clampNumber(startRect.width + dx, CROP_MIN_SIZE, 1 - startRect.x);
+    }
+
+    if (action.includes("n")) {
+        const bottom = startRect.y + startRect.height;
+        nextRect.y = clampNumber(startRect.y + dy, 0, bottom - CROP_MIN_SIZE);
+        nextRect.height = bottom - nextRect.y;
+    }
+
+    if (action.includes("s")) {
+        nextRect.height = clampNumber(startRect.height + dy, CROP_MIN_SIZE, 1 - startRect.y);
+    }
+
+    return normalizeCropRect(nextRect);
+}
+
+function handleCropPointerDown(event) {
+    if (!cropModeActive || !ui.cropOverlay) {
+        return;
+    }
+
+    const action = getCropActionFromEvent(event);
+    if (!action) {
+        return;
+    }
+
+    event.preventDefault();
+    ui.cropOverlay.setPointerCapture(event.pointerId);
+    const startPoint = getCropPointerPosition(event);
+    const startRect = { ...getPhotoEditState().cropRect };
+    cropPointerState = { action, pointerId: event.pointerId, startPoint, startRect };
+}
+
+function handleCropPointerMove(event) {
+    if (!cropPointerState || cropPointerState.pointerId !== event.pointerId) {
+        return;
+    }
+
+    event.preventDefault();
+    getPhotoEditState().cropRect = updateCropRectByAction(
+        cropPointerState.startRect,
+        cropPointerState.startPoint,
+        getCropPointerPosition(event),
+        cropPointerState.action
+    );
+    updateCropOverlay();
+}
+
+function handleCropPointerUp(event) {
+    if (!cropPointerState || cropPointerState.pointerId !== event.pointerId) {
+        return;
+    }
+
+    event.preventDefault();
+    cropPointerState = null;
+    syncCurrentPhotoEditControls();
+}
+
 function updatePositionUI(val) {
     hiddenPosInput.value = val;
     posButtons.forEach(b => b.classList.toggle('active', b.getAttribute('data-value') === val));
@@ -863,10 +1598,100 @@ document.querySelectorAll('.fancy-input').forEach(el => {
     el.addEventListener('change', flushConfigSave);
 });
 
+if (ui.adjustTabBtn) {
+    ui.adjustTabBtn.addEventListener('click', () => setPhotoEditTab("adjust"));
+}
+
+if (ui.rotateCropTabBtn) {
+    ui.rotateCropTabBtn.addEventListener('click', () => setPhotoEditTab("rotate"));
+}
+
+[
+    ["brightness", ui.brightnessSlider],
+    ["contrast", ui.contrastSlider],
+    ["highlights", ui.highlightsSlider],
+    ["shadows", ui.shadowsSlider],
+    ["saturation", ui.saturationSlider],
+    ["temperature", ui.temperatureSlider]
+].forEach(([key, slider]) => {
+    if (!slider) {
+        return;
+    }
+
+    slider.addEventListener('input', (event) => setAdjustmentValue(key, event.target.value));
+});
+
+if (ui.autoCurrentBtn) {
+    ui.autoCurrentBtn.addEventListener('click', applyAutoToCurrentPhoto);
+}
+
+if (ui.autoAllBtn) {
+    ui.autoAllBtn.addEventListener('click', applyAutoToAllPhotos);
+}
+
+if (ui.resetAdjustBtn) {
+    ui.resetAdjustBtn.addEventListener('click', resetAdjustments);
+}
+
+if (ui.rotateLeftBtn) {
+    ui.rotateLeftBtn.addEventListener('click', () => rotateCurrentPhoto(-90));
+}
+
+if (ui.rotateRightBtn) {
+    ui.rotateRightBtn.addEventListener('click', () => rotateCurrentPhoto(90));
+}
+
+if (ui.flipHorizontalBtn) {
+    ui.flipHorizontalBtn.addEventListener('click', () => toggleFlip("horizontal"));
+}
+
+if (ui.flipVerticalBtn) {
+    ui.flipVerticalBtn.addEventListener('click', () => toggleFlip("vertical"));
+}
+
+if (ui.resetRotateBtn) {
+    ui.resetRotateBtn.addEventListener('click', resetCurrentRotation);
+}
+
+if (ui.fineRotateSlider) {
+    ui.fineRotateSlider.addEventListener('input', (event) => setFineRotation(event.target.value));
+}
+
+if (ui.startCropBtn) {
+    ui.startCropBtn.addEventListener('click', startCropMode);
+}
+
+if (ui.applyCropBtn) {
+    ui.applyCropBtn.addEventListener('click', applyCurrentCrop);
+}
+
+if (ui.resetCropBtn) {
+    ui.resetCropBtn.addEventListener('click', resetCurrentCrop);
+}
+
+if (ui.cropOverlay) {
+    ui.cropOverlay.addEventListener('pointerdown', handleCropPointerDown);
+    ui.cropOverlay.addEventListener('pointermove', handleCropPointerMove);
+    ui.cropOverlay.addEventListener('pointerup', handleCropPointerUp);
+    ui.cropOverlay.addEventListener('pointercancel', handleCropPointerUp);
+}
+
+window.addEventListener('resize', updateCropOverlay);
+syncPhotoEditControls();
+
 // ==========================================
 // SECTOR 6: BATCH EXPORT & NAVIGATION
 // ==========================================
 async function loadCurrentImg() {
+    cropModeActive = false;
+    cropPointerState = null;
+    const editState = getPhotoEditState();
+    editState.draftRotation = null;
+    if (ui.cropOverlay) {
+        ui.cropOverlay.setAttribute("aria-hidden", "true");
+    }
+    syncCurrentPhotoEditControls();
+
     if (bgFiles.length > 0) {
         if (ui.navControls) ui.navControls.classList.remove('hidden-nav');
     }
@@ -875,19 +1700,30 @@ async function loadCurrentImg() {
     try {
         currentPreviewImg = await loadImage(bgFiles[currentIdx]);
         clearPreviewFallback();
+        syncPhotoEditControls();
         draw();
     } catch (error) {
         setPreviewFallback("មិនអាចបង្ហាញ Preview រូបនេះបាន");
     }
 }
 
-document.getElementById('nextZone').onclick = () => {
-    if (currentIdx < bgFiles.length - 1) { currentIdx++; loadCurrentImg(); }
-};
+function showNextPreview() {
+    if (currentIdx < bgFiles.length - 1) {
+        currentIdx++;
+        loadCurrentImg();
+    }
+}
 
-document.getElementById('prevZone').onclick = () => {
-    if (currentIdx > 0) { currentIdx--; loadCurrentImg(); }
-};
+function showPreviousPreview() {
+    if (currentIdx > 0) {
+        currentIdx--;
+        loadCurrentImg();
+    }
+}
+
+document.getElementById('nextZone').onclick = showNextPreview;
+
+document.getElementById('prevZone').onclick = showPreviousPreview;
 
 function handleNavZoneKeydown(event, action) {
     if (event.key !== "Enter" && event.key !== " ") {
@@ -899,13 +1735,55 @@ function handleNavZoneKeydown(event, action) {
 }
 
 document.getElementById('nextZone').addEventListener('keydown', (event) => {
-    handleNavZoneKeydown(event, () => {
-        if (currentIdx < bgFiles.length - 1) { currentIdx++; loadCurrentImg(); }
-    });
+    handleNavZoneKeydown(event, showNextPreview);
 });
 
 document.getElementById('prevZone').addEventListener('keydown', (event) => {
-    handleNavZoneKeydown(event, () => {
-        if (currentIdx > 0) { currentIdx--; loadCurrentImg(); }
-    });
+    handleNavZoneKeydown(event, showPreviousPreview);
 });
+
+function isTextEntryTarget(element) {
+    if (!element) {
+        return false;
+    }
+
+    const tagName = element.tagName ? element.tagName.toLowerCase() : "";
+    const inputType = element.type ? element.type.toLowerCase() : "";
+    const textInputTypes = new Set([
+        "email",
+        "number",
+        "password",
+        "search",
+        "tel",
+        "text",
+        "url"
+    ]);
+
+    return (
+        element.isContentEditable ||
+        tagName === "textarea" ||
+        tagName === "select" ||
+        (tagName === "input" && textInputTypes.has(inputType))
+    );
+}
+
+document.addEventListener('keydown', (event) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) {
+        return;
+    }
+
+    const key = event.key.toLowerCase();
+    const isHorizontalArrow = key === "arrowright" || key === "arrowleft";
+
+    if (isTextEntryTarget(document.activeElement) || (isHorizontalArrow && document.activeElement && document.activeElement.tagName === "INPUT")) {
+        return;
+    }
+
+    if (key === "arrowright" || key === "d") {
+        event.preventDefault();
+        showNextPreview();
+    } else if (key === "arrowleft" || key === "a") {
+        event.preventDefault();
+        showPreviousPreview();
+    }
+}, true);
