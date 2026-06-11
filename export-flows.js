@@ -58,7 +58,10 @@ async function startAndroidChromeFolderExport(btn) {
                         ? `កំពុងរក្សាទុកទៅFolderដែលបានជ្រើស • បានរំលង ${skippedCount} រូប`
                         : "កំពុងរក្សាទុកទៅFolderដែលបានជ្រើស"
                 });
-                await yieldToBrowser(isHeicFile(bgFiles[i]) ? ANDROID_HEIC_COOLDOWN_MS : 0);
+                const recoveryDelay = result.ok
+                    ? (isHeicFile(bgFiles[i]) ? ANDROID_HEIC_COOLDOWN_MS : 0)
+                    : 250;
+                await yieldToBrowser(recoveryDelay);
             }
 
             setPrimaryButtonState(false, "ចាប់ផ្តើមជាថ្មី!");

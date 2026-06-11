@@ -158,6 +158,46 @@ function loadImageFromBlob(blob, sourceName = "image") {
     });
 }
 
+async function loadImageBitmapFromBlob(blob, sourceName = "image") {
+    if (!window.createImageBitmap) {
+        throw new Error(`Image load failed: ${sourceName}`);
+    }
+
+    try {
+        return await createImageBitmap(blob, { imageOrientation: "from-image" });
+    } catch (orientationError) {
+        try {
+            return await createImageBitmap(blob);
+        } catch (bitmapError) {
+            throw new Error(`Image load failed: ${sourceName}`);
+        }
+    }
+}
+
+async function decodeBatchImageBlob(blob, sourceName) {
+    let lastError = null;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            return await loadImageFromBlob(blob, sourceName);
+        } catch (imageError) {
+            lastError = imageError;
+        }
+
+        try {
+            return await loadImageBitmapFromBlob(blob, sourceName);
+        } catch (bitmapError) {
+            lastError = bitmapError;
+        }
+
+        if (attempt === 0) {
+            await yieldToBrowser(120);
+        }
+    }
+
+    throw lastError || new Error(`Image load failed: ${sourceName}`);
+}
+
 async function convertHeicToJpegBlob(file) {
     try {
         await ensureHeic2AnyLoaded();
@@ -235,15 +275,17 @@ function preconvertDesktopHeicFiles(files, startIndex, endIndex) {
     }
 }
 
-function loadBatchImage(file) {
-    return loadImageFromBlob(file, file.name).catch(async (error) => {
+async function loadBatchImage(file) {
+    try {
+        return await decodeBatchImageBlob(file, file.name);
+    } catch (imageError) {
         if (!isHeicFile(file)) {
-            throw error;
+            throw imageError;
         }
 
         const convertedBlob = await convertHeicToJpegBlobWithCache(file);
-        return loadImageFromBlob(convertedBlob, file.name);
-    });
+        return decodeBatchImageBlob(convertedBlob, file.name);
+    }
 }
 
 function openDirectoryHandleDb() {
@@ -321,8 +363,7 @@ function isSupportedImageFile(file) {
     );
 }
 
-function getOutputSize(width, height) {
-    const maxOutputPixels = getCurrentMaxOutputPixels();
+function getSizeWithinPixelLimit(width, height, maxOutputPixels) {
     const pixels = width * height;
     if (pixels <= maxOutputPixels) return { width, height };
 
@@ -331,6 +372,24 @@ function getOutputSize(width, height) {
         width: Math.round(width * scale),
         height: Math.round(height * scale)
     };
+}
+
+function getOutputSize(width, height) {
+    return getSizeWithinPixelLimit(width, height, getCurrentMaxOutputPixels());
+}
+
+function getRenderSourceScale(sourceImage, editedSize, targetSize, maxWorkingPixels) {
+    const targetScale = Math.min(
+        1,
+        targetSize.width / editedSize.width,
+        targetSize.height / editedSize.height
+    );
+    const sourcePixels = sourceImage.width * sourceImage.height;
+    const workingScale = sourcePixels > maxWorkingPixels
+        ? Math.sqrt(maxWorkingPixels / sourcePixels)
+        : 1;
+
+    return Math.min(targetScale, workingScale);
 }
 
 function clampNumber(value, min, max) {
@@ -620,8 +679,11 @@ function buildEditedPhotoCanvas(sourceImage, editState, options = {}) {
     const absRadians = Math.abs(rotationRadians);
     const sin = Math.abs(Math.sin(absRadians));
     const cos = Math.abs(Math.cos(absRadians));
-    const baseWidth = Math.max(1, Math.round(sourceImage.width * cos + sourceImage.height * sin));
-    const baseHeight = Math.max(1, Math.round(sourceImage.width * sin + sourceImage.height * cos));
+    const sourceScale = clampNumber(Number(options.sourceScale) || 1, 0.01, 1);
+    const sourceWidth = Math.max(1, Math.round(sourceImage.width * sourceScale));
+    const sourceHeight = Math.max(1, Math.round(sourceImage.height * sourceScale));
+    const baseWidth = Math.max(1, Math.round(sourceWidth * cos + sourceHeight * sin));
+    const baseHeight = Math.max(1, Math.round(sourceWidth * sin + sourceHeight * cos));
     let baseCanvas = document.createElement('canvas');
     const baseCtx = baseCanvas.getContext('2d');
     const adjustments = getPhotoAdjustmentsForRender(editState);
@@ -639,14 +701,14 @@ function buildEditedPhotoCanvas(sourceImage, editState, options = {}) {
     baseCtx.translate(baseWidth / 2, baseHeight / 2);
     baseCtx.rotate(rotationRadians);
     baseCtx.scale(editState.flipHorizontal ? -1 : 1, editState.flipVertical ? -1 : 1);
-    baseCtx.drawImage(sourceImage, -sourceImage.width / 2, -sourceImage.height / 2);
+    baseCtx.drawImage(sourceImage, -sourceWidth / 2, -sourceHeight / 2, sourceWidth, sourceHeight);
     baseCtx.setTransform(1, 0, 0, 1, 0, 0);
     baseCtx.filter = "none";
     applyPixelAdjustments(baseCanvas, adjustments);
 
     const smartCropRect = options.disableSmartRotationCrop
         ? null
-        : getSmartRotationCropRect(sourceImage.width, sourceImage.height, rotationDegrees, baseWidth, baseHeight);
+        : getSmartRotationCropRect(sourceWidth, sourceHeight, rotationDegrees, baseWidth, baseHeight);
 
     if (smartCropRect) {
         baseCanvas = cropCanvasByRect(baseCanvas, smartCropRect);
@@ -920,18 +982,35 @@ function updateShowMoreButton() {
 
 async function processImageToBlob(file, offCanvas) {
     const img = await loadBatchImage(file);
-    const fileIndex = bgFiles.indexOf(file);
-    const editState = getPhotoEditState(fileIndex >= 0 ? fileIndex : currentIdx);
-    const editedSize = getSourceFrameSize(img, editState);
-    const outputSize = getOutputSize(editedSize.width, editedSize.height);
 
-    render(offCanvas, img, logoImg, outputSize.width, outputSize.height, { editState });
+    try {
+        const fileIndex = bgFiles.indexOf(file);
+        const editState = getPhotoEditState(fileIndex >= 0 ? fileIndex : currentIdx);
+        const editedSize = getSourceFrameSize(img, editState);
+        const outputSize = getOutputSize(editedSize.width, editedSize.height);
+        const sourceScale = getRenderSourceScale(
+            img,
+            editedSize,
+            outputSize,
+            isMobileDevice() ? MOBILE_EXPORT_WORKING_PIXELS : DESKTOP_EXPORT_WORKING_PIXELS
+        );
 
-    const outputBlob = await canvasToJpegBlob(offCanvas, getCurrentExportQuality());
-    const previewBlob = await canvasToThumbnailBlob(offCanvas);
-    resetCanvas(offCanvas);
+        render(offCanvas, img, logoImg, outputSize.width, outputSize.height, {
+            editState,
+            sourceScale
+        });
 
-    return { outputBlob, previewBlob };
+        const outputBlob = await canvasToJpegBlob(offCanvas, getCurrentExportQuality());
+        const previewBlob = await canvasToThumbnailBlob(offCanvas);
+
+        return { outputBlob, previewBlob };
+    } finally {
+        resetCanvas(offCanvas);
+
+        if (img && typeof img.close === "function") {
+            img.close();
+        }
+    }
 }
 
 function updateExportProgress(processedCount, totalCount, progressMessage = null) {
@@ -1163,8 +1242,32 @@ function draw() {
         return;
     }
 
+    const editState = getPhotoEditState();
+    const editedSize = getSourceFrameSize(currentPreviewImg, editState, { ignoreCrop: cropModeActive });
+    const previewSize = getSizeWithinPixelLimit(
+        editedSize.width,
+        editedSize.height,
+        isMobileDevice() ? 1200000 : 2000000
+    );
+    const sourceScale = getRenderSourceScale(
+        currentPreviewImg,
+        editedSize,
+        previewSize,
+        isMobileDevice() ? 1200000 : 2000000
+    );
     const hideLogoForEditMode = cropModeActive || activePhotoEditTab === "rotate";
-    render(canvas, currentPreviewImg, hideLogoForEditMode ? null : logoImg, null, null, { ignoreCrop: cropModeActive });
+    render(
+        canvas,
+        currentPreviewImg,
+        hideLogoForEditMode ? null : logoImg,
+        previewSize.width,
+        previewSize.height,
+        {
+            editState,
+            ignoreCrop: cropModeActive,
+            sourceScale
+        }
+    );
     updateCropOverlay();
 }
 

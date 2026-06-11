@@ -114,11 +114,12 @@ const pendingHeicBatchWorkerRequests = new Map();
 const DEFAULT_PLACEHOLDER_TEXT = ui.placeholderText ? ui.placeholderText.innerText : "សូមជ្រើសរើសរូបភាពដើម្បីចាប់ផ្ដើម";
 
 const MAX_OUTPUT_PIXELS = 4000000;
+const MOBILE_EXPORT_WORKING_PIXELS = 6000000;
+const DESKTOP_EXPORT_WORKING_PIXELS = 12000000;
 const ZIP_CHUNK_SIZE = 5;
 const MOBILE_SHARE_BATCH_SIZE = 10;
 const RESULT_PREVIEW_PAGE_SIZE = 20;
 const AUTO_DOWNLOAD_THRESHOLD = 20;
-const ANDROID_FILE_TIMEOUT_MS = 20000;
 const ANDROID_HEIC_COOLDOWN_MS = 60;
 const DESKTOP_HEIC_PRECONVERT_AHEAD = 2;
 const CROP_MIN_SIZE = 0.06;
@@ -436,22 +437,6 @@ function getGuidanceContent() {
     return "";
 }
 
-function withTimeout(promise, timeoutMs, timeoutMessage) {
-    return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
-
-        promise
-            .then((value) => {
-                clearTimeout(timer);
-                resolve(value);
-            })
-            .catch((error) => {
-                clearTimeout(timer);
-                reject(error);
-            });
-    });
-}
-
 function formatDisplayFileName(fileOrName, maxLength = 36) {
     const rawName = typeof fileOrName === "string"
         ? fileOrName
@@ -540,12 +525,7 @@ async function processAndroidBatchFile(file) {
     const workCanvas = document.createElement('canvas');
 
     try {
-        const result = await withTimeout(
-            processImageToBlob(file, workCanvas),
-            ANDROID_FILE_TIMEOUT_MS,
-            `HEIC processing timed out: ${file.name}`
-        );
-
+        const result = await processImageToBlob(file, workCanvas);
         return { ok: true, ...result };
     } catch (error) {
         return { ok: false, error };

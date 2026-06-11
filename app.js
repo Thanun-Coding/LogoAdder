@@ -33,7 +33,17 @@ ui.downloadBtn.onclick = async () => {
     resetExportState();
 
     if (canUseAndroidFolderSave()) {
-        await startAndroidChromeFolderExport(btn);
+        const shouldRestorePreview = Boolean(currentPreviewImg);
+        currentPreviewImg = null;
+        await yieldToBrowser(100);
+
+        try {
+            await startAndroidChromeFolderExport(btn);
+        } finally {
+            if (shouldRestorePreview && bgFiles.length > 0 && !currentPreviewImg) {
+                loadCurrentImg();
+            }
+        }
         return;
     }
 
